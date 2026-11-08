@@ -16,8 +16,8 @@ const BUTTON_STEP = 3;
 
 const SGR = { dim: "2", green: "32", red: "31", reverse: "7" };
 
-// One row of styled segments, cut to `width` cells. `base` styles the whole
-// row, padded to the width.
+// One row of styled segments, cut to `width` cells. `base`, a style name or
+// raw SGR parameters, styles the whole row, padded to the width.
 function line(segments, width, base) {
   let s = "";
   let left = width;
@@ -25,7 +25,7 @@ function line(segments, width, base) {
     if (left <= 0) break;
     const t = text.length > left ? `${text.slice(0, Math.max(0, left - 1))}…` : text;
     left -= t.length;
-    s += `\x1b[${[0, base && SGR[base], style && SGR[style]].filter(Boolean).join(";")}m${t}`;
+    s += `\x1b[${[0, base && (SGR[base] ?? base), style && SGR[style]].filter(Boolean).join(";")}m${t}`;
   }
   return `${s}${base ? " ".repeat(Math.max(0, left)) : ""}\x1b[0m`;
 }
@@ -120,7 +120,8 @@ export const fraction = (rect, e) => ({ x: (e.x - rect.x) / rect.width, y: (e.y 
 
 export const hit = (regions, e) => regions.find((r) => e.x >= r.x0 && e.x < r.x1 && e.y >= r.y0 && e.y < r.y1);
 
-// state: { view, picker: null | { devices, cursor }, device (this pane's), fps, notice }
+// state: { view, picker: null | { devices, cursor }, device (this pane's), fps, notice,
+//   selection (SGR parameters for the picker's current row) }
 // -> the header (with its icons by column), the area's rows (null while the
 // screen shows there), the status line, and the regions a click can hit, in
 // pixels, each with `run(mouseEvent)`.
@@ -155,7 +156,7 @@ export function render(state, geometry, actions) {
         const y0 = area.y + i * ch;
         regions.push({ x0: 0, y0, x1: area.width, y1: y0 + ch, run: (e) => (e.action === "wheel" ? actions.moveCursor(e.dy) : e.action === "press" && entry.select(actions)) });
       }
-      return line([[" "], ...entry.segments], cols, index === picker.cursor ? "reverse" : null);
+      return line([[" "], ...entry.segments], cols, index === picker.cursor ? state.selection ?? "reverse" : null);
     });
     if (!entries.length) rows = wrap("No simulators or emulators. Create one in Xcode or Android Studio.", cols - 2).map((t) => line([[` ${t}`, "dim"]], cols));
     regions.push({ x0: 0, y0: area.y, x1: area.width, y1: area.y + area.height, run: (e) => (e.action === "wheel" ? actions.moveCursor(e.dy) : e.action === "press" && actions.togglePicker()) });

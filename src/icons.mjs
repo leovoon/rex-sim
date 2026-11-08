@@ -4,10 +4,10 @@ import sharp from "sharp";
 const DIR = new URL("../icons/", import.meta.url);
 
 // A Lucide icon as a PNG `width` x `height` pixels, the icon centered at about
-// half the height, stroked in `color` ("#rrggbb").
+// three quarters of the height, stroked in `color` ("#rrggbb").
 export async function iconPng(name, width, height, color) {
   const svg = await readFile(new URL(`${name}.svg`, DIR), "utf8");
-  const side = Math.round(height * 0.6);
+  const side = Math.round(height * 0.78);
   const inner = svg
     .replace(/width="24" height="24"/, `x="${Math.round((width - side) / 2)}" y="${Math.round((height - side) / 2)}" width="${side}" height="${side}"`)
     .replaceAll("currentColor", color);

@@ -104,7 +104,8 @@ export async function run({ device: deviceArg }) {
 
   function redraw() {
     if (!geometry || paused || quitting) return;
-    const chrome = render({ view, picker, device: target(), fps, notice }, geometry, actions);
+    const selection = `48;2;${mix(colors.foreground, colors.background, 0.16).join(";")}`;
+    const chrome = render({ view, picker, device: target(), fps, notice, selection }, geometry, actions);
     regions = chrome.regions;
     const placed = chrome.icons.filter((i) => icons.has(i.icon)).map((i) => ({ col: i.col, key: i.icon, png: icons.get(i.icon) }));
     screen.drawChrome({ ...chrome, icons: placed }, geometry);
@@ -118,7 +119,7 @@ export async function run({ device: deviceArg }) {
   // foreground and background.
   async function renderIcons() {
     const { cellWidth, cellHeight } = metrics;
-    const color = hex(mix(colors.foreground, colors.background, 0.7));
+    const color = hex(mix(colors.foreground, colors.background, 0.85));
     const names = BUTTONS.map((b) => b.icon);
     const pngs = await Promise.all(names.map((n) => iconPng(n, cellWidth * BUTTON_COLS, cellHeight, color)));
     icons = new Map(names.map((n, i) => [n, pngs[i]]));
