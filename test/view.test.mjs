@@ -20,8 +20,8 @@ const press = (x, y) => ({ type: "mouse", action: "press", button: 0, x, y });
 const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
 test("the screen fits between the header and the status line, centered, aspect kept", () => {
-  const frame = layout(metrics, { width: 1206, height: 2622 });
-  const { screen } = frame;
+  const geometry = layout(metrics, { width: 1206, height: 2622 });
+  const { screen } = geometry;
   assert.equal(screen.y, 28);
   assert.equal(screen.height, 28 * 28);
   assert.equal(screen.width, Math.floor(1206 * (784 / 2622)));
@@ -33,10 +33,10 @@ test("the screen fits between the header and the status line, centered, aspect k
 });
 
 test("a click on the screen taps at that fraction of it; the wheel scrolls there", () => {
-  const frame = layout(metrics, { width: 1206, height: 2622 });
+  const geometry = layout(metrics, { width: 1206, height: 2622 });
   const { calls, actions } = recorder();
-  const { regions } = render(streaming(iphone, iosInput), frame, actions);
-  const s = frame.screen;
+  const { regions } = render(streaming(iphone, iosInput), geometry, actions);
+  const s = geometry.screen;
   hit(regions, press(s.x + s.width / 2, s.y + s.height / 4)).run(press(s.x + s.width / 2, s.y + s.height / 4));
   const wheel = { type: "mouse", action: "wheel", dy: 1, x: s.x, y: s.y + s.height / 2 };
   hit(regions, wheel).run(wheel);
@@ -44,11 +44,11 @@ test("a click on the screen taps at that fraction of it; the wheel scrolls there
 });
 
 test("the toolbar has a button per command the device takes; iOS has a keyboard, Android not", () => {
-  const frame = layout(metrics, { width: 1206, height: 2622 });
+  const geometry = layout(metrics, { width: 1206, height: 2622 });
   const pressAll = (state) => {
     const { calls, actions } = recorder();
     for (let x = 0; x < 40 * 14; x += 7) {
-      hit(render(state, frame, actions).regions, press(x, 10))?.run(press(x, 10));
+      hit(render(state, geometry, actions).regions, press(x, 10))?.run(press(x, 10));
     }
     return [...new Set(calls.filter(([n]) => n === "command").map(([, c]) => c))];
   };
@@ -57,23 +57,23 @@ test("the toolbar has a button per command the device takes; iOS has a keyboard,
 });
 
 test("the header names the device and opens the picker", () => {
-  const frame = layout(metrics, null);
+  const geometry = layout(metrics, null);
   const { calls, actions } = recorder();
-  const out = render({ view: { kind: "connecting", device: iphone }, picker: null, device: iphone, fps: 0 }, frame, actions);
+  const out = render({ view: { kind: "connecting", device: iphone }, picker: null, device: iphone, fps: 0 }, geometry, actions);
   assert.match(strip(out.header), /iPhone 17 · iOS 27\.2 ▾/);
   assert.ok(strip(out.area.join("\n")).includes("Connecting to iPhone 17…"));
   hit(out.regions, press(20, 10)).run(press(20, 10));
   assert.deepEqual(calls, [["togglePicker"]]);
-  const none = render({ view: { kind: "empty" }, picker: null, device: null, fps: 0 }, frame, actions);
+  const none = render({ view: { kind: "empty" }, picker: null, device: null, fps: 0 }, geometry, actions);
   assert.match(strip(none.header), /Select device ▾/);
   assert.ok(strip(none.area.join("\n")).includes("Pick a device above"));
 });
 
 test("the picker lists Android then iOS; clicking a row picks it, unusable rows can't be picked", () => {
-  const frame = layout(metrics, null);
+  const geometry = layout(metrics, null);
   const { calls, actions } = recorder();
   const state = { view: { kind: "empty" }, picker: { devices: [iphone, pixel, old], cursor: 4 }, device: iphone, fps: 0 };
-  const out = render(state, frame, actions);
+  const out = render(state, geometry, actions);
   const rows = out.area.map(strip).map((r) => r.trim());
   assert.deepEqual(rows.slice(0, 5), ["Android", "Pixel  Android API 36", "Old  Android API 30 · x86_64 image…", "iOS", "● iPhone 17  iOS 27.2  ✓"]);
   assert.equal(rows[6], "Repair input · restarts SpringBoard");

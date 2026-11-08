@@ -1,11 +1,14 @@
 {
   "name": "rex-sim",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "A live iOS simulator in a terminal, drawn with the Kitty graphics protocol.",
+  "description": "An iOS simulator or Android emulator, live in a Rex pane, drawn with the Kitty graphics protocol.",
   "type": "module",
   "bin": {
     "rex-sim": "bin/rex-sim.mjs"
+  },
+  "scripts": {
+    "test": "node --test"
   },
   "engines": {
     "node": ">=22"

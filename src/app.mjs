@@ -1,12 +1,12 @@
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import sharp from "sharp";
-import { listDevices, platformOf } from "./devices.mjs";
+import { canRepair, listDevices, platformOf } from "./devices.mjs";
 import { imageSize } from "./frames.mjs";
 import { iconPng } from "./icons.mjs";
 import { keyUsage } from "./keys.mjs";
 import { enter, leave, requestMetrics, InputParser, Screen } from "./terminal.mjs";
-import { firstCursor, fraction, hit, layout, moveCursor, pickerEntries, render } from "./view.mjs";
+import { BUTTONS, BUTTON_COLS, firstCursor, fraction, hit, layout, moveCursor, pickerEntries, render } from "./view.mjs";
 
 // The device picked last in any pane, where a new pane starts.
 const STATE_DIR = `${process.env.XDG_STATE_HOME || `${homedir()}/.local/state`}/rex-sim`;
@@ -54,7 +54,7 @@ export async function run({ device: deviceArg }) {
   let metrics = null;
   let colors = { foreground: [200, 200, 200], background: [0, 0, 0] };
   let frameSize = null;
-  let frame = null;
+  let geometry = null;
   let regions = [];
   let icons = new Map();
   let gesture = null;
@@ -97,17 +97,17 @@ export async function run({ device: deviceArg }) {
 
   function relayout() {
     if (!metrics) return;
-    frame = layout({ cols: process.stdout.columns, rows: process.stdout.rows, ...metrics }, frameSize);
-    const s = frame.screen;
+    geometry = layout({ cols: process.stdout.columns, rows: process.stdout.rows, ...metrics }, frameSize);
+    const s = geometry.screen;
     mask = s && cornerMask(s.width, s.height, Math.round(s.width * CORNER));
   }
 
   function redraw() {
-    if (!frame || paused || quitting) return;
-    const chrome = render({ view, picker, device: target(), fps, notice }, frame, actions);
+    if (!geometry || paused || quitting) return;
+    const chrome = render({ view, picker, device: target(), fps, notice }, geometry, actions);
     regions = chrome.regions;
     const placed = chrome.icons.filter((i) => icons.has(i.icon)).map((i) => ({ col: i.col, key: i.icon, png: icons.get(i.icon) }));
-    screen.drawChrome({ ...chrome, icons: placed }, frame);
+    screen.drawChrome({ ...chrome, icons: placed }, geometry);
     if (chrome.area === null && !screen.shown.frames && last && last.session === view.session) {
       latest ??= last;
       wakeDraw?.();
@@ -119,8 +119,8 @@ export async function run({ device: deviceArg }) {
   async function renderIcons() {
     const { cellWidth, cellHeight } = metrics;
     const color = hex(mix(colors.foreground, colors.background, 0.7));
-    const names = ["house", "lock", "volume-1", "volume-2", "rotate-ccw", "keyboard"];
-    const pngs = await Promise.all(names.map((n) => iconPng(n, cellWidth * 2, cellHeight, color)));
+    const names = BUTTONS.map((b) => b.icon);
+    const pngs = await Promise.all(names.map((n) => iconPng(n, cellWidth * BUTTON_COLS, cellHeight, color)));
     icons = new Map(names.map((n, i) => [n, pngs[i]]));
     screen.shown.header = null;
     redraw();
@@ -166,10 +166,7 @@ export async function run({ device: deviceArg }) {
     "volume-down": () => input()?.volume("down"),
     rotate: () => input()?.rotate(),
     keyboard: () => input()?.softwareKeyboard?.(),
-    repair: () => {
-      const d = target();
-      if (d?.booted && platformOf(d).repair) repair(d);
-    },
+    repair: () => canRepair(target()) && repair(target()),
     devices: () => openPicker(),
     device: async (id) => {
       devices = await listDevices();
@@ -217,8 +214,8 @@ export async function run({ device: deviceArg }) {
   function onMouse(e) {
     if (e.action === "drag" || e.action === "release") {
       const i = input();
-      if (!gesture || !i || !frame.screen) return;
-      i.touch(e.action === "drag" ? "move" : "end", clamp(fraction(frame.screen, e)), gesture.edge);
+      if (!gesture || !i || !geometry.screen) return;
+      i.touch(e.action === "drag" ? "move" : "end", clamp(fraction(geometry.screen, e)), gesture.edge);
       if (e.action === "release") gesture = null;
       return;
     }
@@ -310,10 +307,10 @@ export async function run({ device: deviceArg }) {
         relayout();
         redraw();
       }
-      const rect = frame.screen;
+      const rect = geometry.screen;
       if (!rect) continue;
       const pixels = await sharp(bytes).resize(rect.width, rect.height, { fit: "fill" }).ensureAlpha().raw().toBuffer();
-      if (view.session !== session || picker || paused || rect !== frame.screen) continue;
+      if (view.session !== session || picker || paused || rect !== geometry.screen) continue;
       for (let i = 0; i < mask.offsets.length; i++) pixels[mask.offsets[i]] = mask.alphas[i];
       await screen.drawFrame(pixels, rect);
       drawn++;

@@ -1,4 +1,4 @@
-import { PLATFORMS, platformOf } from "./devices.mjs";
+import { PLATFORMS, canRepair } from "./devices.mjs";
 
 // Each toolbar button runs a command when the session's input has `needs`,
 // so Android, which has no software keyboard, shows no keyboard button.
@@ -11,7 +11,7 @@ export const BUTTONS = [
   { command: "keyboard", icon: "keyboard", needs: "softwareKeyboard" },
 ];
 // A button is an icon two cells wide, then a gap of one.
-const BUTTON_COLS = 2;
+export const BUTTON_COLS = 2;
 const BUTTON_STEP = 3;
 
 const SGR = { dim: "2", green: "32", red: "31", reverse: "7" };
@@ -94,7 +94,7 @@ export function pickerEntries(devices, current) {
       });
     }
   }
-  if (current?.booted && platformOf(current).repair) {
+  if (canRepair(current)) {
     entries.push({ segments: [] });
     entries.push({
       segments: [["  Repair input"], [" · restarts SpringBoard", "dim"]],
@@ -124,9 +124,9 @@ export const hit = (regions, e) => regions.find((r) => e.x >= r.x0 && e.x < r.x1
 // -> the header (with its icons by column), the area's rows (null while the
 // screen shows there), the status line, and the regions a click can hit, in
 // pixels, each with `run(mouseEvent)`.
-export function render(state, frame, actions) {
+export function render(state, geometry, actions) {
   const { view, picker, device } = state;
-  const { cols, cellWidth: cw, cellHeight: ch, area } = frame;
+  const { cols, cellWidth: cw, cellHeight: ch, area } = geometry;
   const regions = [];
   const streaming = view.kind === "streaming";
 
@@ -161,7 +161,7 @@ export function render(state, frame, actions) {
     regions.push({ x0: 0, y0: area.y, x1: area.width, y1: area.y + area.height, run: (e) => (e.action === "wheel" ? actions.moveCursor(e.dy) : e.action === "press" && actions.togglePicker()) });
     hints = "↑↓ move · enter pick · esc close";
   } else if (streaming) {
-    const screen = frame.screen;
+    const screen = geometry.screen;
     if (screen) {
       regions.push({
         x0: screen.x, y0: screen.y, x1: screen.x + screen.width, y1: screen.y + screen.height,

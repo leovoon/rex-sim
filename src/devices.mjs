@@ -10,6 +10,8 @@ export const PLATFORMS = [
 
 export const platformOf = (device) => PLATFORMS.find((p) => p.id === device.platform);
 
+export const canRepair = (device) => Boolean(device?.booted && platformOf(device).repair);
+
 // Every device a platform can list; a platform whose tools are missing lists none.
 export async function listDevices() {
   return (await Promise.all(PLATFORMS.map((p) => p.list().catch(() => [])))).flat();
