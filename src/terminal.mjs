@@ -109,7 +109,7 @@ export class Screen {
   frame = 0;
   // "file": the terminal reads a temp file, no base64; "direct": bytes inline.
   medium = "file";
-  shown = { header: null, area: null, status: null, frames: false };
+  shown = { header: null, area: null, status: null, frames: false, icons: 0 };
 
   async drawFrame(pixels, rect) {
     const id = FRAME_IDS[this.frame % 2];
@@ -135,7 +135,7 @@ export class Screen {
     out.write(FRAME_IDS.map((id) => graphics(`a=d,d=I,i=${id},q=2`)).join(""));
   }
 
-  // chrome: { header, icons: [{ col, png }], area: string[] | null, status },
+  // chrome: { header, icons: [{ col, key, png }], area: string[] | null, status },
   // with `area` null while the screen shows there.
   drawChrome(chrome, layout) {
     const { header, icons, area, status } = chrome;
@@ -144,7 +144,8 @@ export class Screen {
     if (headerKey !== this.shown.header) {
       this.shown.header = headerKey;
       s += `${at(1, 1)}${ESC}[2K${header}`;
-      for (let i = 0; i < 16; i++) s += graphics(`a=d,d=I,i=${ICON_ID + i},q=2`);
+      for (let i = 0; i < this.shown.icons; i++) s += graphics(`a=d,d=I,i=${ICON_ID + i},q=2`);
+      this.shown.icons = icons.length;
       icons.forEach((icon, i) => {
         s += at(1, icon.col + 1) + inline(`a=T,f=100,i=${ICON_ID + i},p=1,C=1,q=2`, icon.png.toString("base64"));
       });
@@ -166,7 +167,7 @@ export class Screen {
 
   // Everything, as after a resize.
   reset() {
-    this.shown = { header: null, area: null, status: null, frames: false };
+    this.shown = { header: null, area: null, status: null, frames: false, icons: 0 };
     out.write(`${DELETE_ALL}${ESC}[2J`);
   }
 }
