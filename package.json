@@ -1,0 +1,16 @@
+{
+  "name": "rex-sim",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A live iOS simulator in a terminal, drawn with the Kitty graphics protocol.",
+  "type": "module",
+  "bin": {
+    "rex-sim": "bin/rex-sim.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "sharp": "^0.34.5"
+  }
+}
