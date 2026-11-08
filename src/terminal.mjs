@@ -7,6 +7,7 @@ const out = process.stdout;
 // Mouse: button-event tracking (drags), SGR encoding, pixel coordinates.
 const MOUSE_ON = `${ESC}[?1002h${ESC}[?1006h${ESC}[?1016h`;
 const MOUSE_OFF = `${ESC}[?1016l${ESC}[?1006l${ESC}[?1002l`;
+const DELETE_ALL = `${ESC}_Ga=d,d=A,q=2${ESC}\\`;
 
 export function enter() {
   process.stdin.setRawMode(true);
@@ -15,9 +16,27 @@ export function enter() {
 }
 
 export function leave() {
-  out.write(`${ESC}_Ga=d,d=A,q=2${ESC}\\${MOUSE_OFF}${ESC}[?25h${ESC}[?1049l`);
+  out.write(`${DELETE_ALL}${MOUSE_OFF}${ESC}[?25h${ESC}[?1049l`);
   process.stdin.setRawMode(false);
   process.stdin.pause();
+}
+
+// Asks for the default colors and the cell size in pixels.
+export function requestMetrics() {
+  out.write(`${ESC}]10;?${ESC}\\${ESC}]11;?${ESC}\\${ESC}[16t`);
+}
+
+const NAMED = { A: "up", B: "down", C: "right", D: "left", H: "home", F: "end" };
+const TILDE = { 1: "home", 3: "delete", 4: "end", 5: "pageup", 6: "pagedown", 7: "home", 8: "end" };
+// What a chunk may end with partway through a sequence.
+const PARTIAL = /^\x1b(?:\[[0-9;?<>=]*[ -/]*|_[^\x1b]*\x1b?|\][^\x07\x1b]*\x1b?|O)?$/;
+
+function mouse(code, x, y, release) {
+  const at = { type: "mouse", x: x - 1, y: y - 1 };
+  if (code & 64) return { ...at, action: "wheel", dy: code & 1 ? 1 : -1 };
+  if (release) return { ...at, action: "release" };
+  if (code & 32) return { ...at, action: "drag" };
+  return { ...at, action: "press", button: code & 3 };
 }
 
 // Turns stdin bytes into events. Keeps a partial escape sequence for the next chunk.
@@ -31,18 +50,28 @@ export class InputParser {
     let m;
     while (s.length) {
       if ((m = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])/.exec(s))) {
-        yield { type: "mouse", code: Number(m[1]), x: Number(m[2]) - 1, y: Number(m[3]) - 1, release: m[4] === "m" };
-      } else if ((m = /^\x1b_G([^\x1b]*)\x1b\\/.exec(s))) {
-        yield { type: "graphics", reply: m[1] };
+        yield mouse(Number(m[1]), Number(m[2]), Number(m[3]), m[4] === "m");
+      } else if ((m = /^\x1b_([^\x1b]*)\x1b\\/.exec(s))) {
+        const body = m[1];
+        if (body.startsWith("G")) yield { type: "graphics", reply: body.slice(1) };
+        else if (body.startsWith("rex-sim;")) {
+          const [name, ...arg] = body.slice(8).split(";");
+          yield { type: "command", name, arg: arg.length ? arg.join(";") : null };
+        }
+      } else if ((m = /^\x1b\](1[01]);rgb:([0-9a-f]+)\/([0-9a-f]+)\/([0-9a-f]+)(?:\x07|\x1b\\)/i.exec(s))) {
+        const rgb = m.slice(2, 5).map((h) => Math.round((parseInt(h, 16) / (16 ** h.length - 1)) * 255));
+        yield { type: "color", slot: m[1] === "10" ? "foreground" : "background", rgb };
+      } else if ((m = /^\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/.exec(s))) {
+        // Another reply we don't use.
       } else if ((m = /^\x1b\[(\d+);(\d+);(\d+)t/.exec(s))) {
         yield { type: "report", kind: Number(m[1]), height: Number(m[2]), width: Number(m[3]) };
-      } else if ((m = /^\x1b[\[O]([ABCD])/.exec(s))) {
-        yield { type: "key", key: { A: "up", B: "down", C: "right", D: "left" }[m[1]] };
-      } else if ((m = /^\x1b\[3~/.exec(s))) {
-        yield { type: "key", key: "delete" };
+      } else if ((m = /^\x1b[[O](?:1;\d+)?([ABCDHF])/.exec(s))) {
+        yield { type: "key", key: NAMED[m[1]] };
+      } else if ((m = /^\x1b\[(\d)~/.exec(s)) && TILDE[m[1]]) {
+        yield { type: "key", key: TILDE[m[1]] };
       } else if ((m = /^\x1b\[[0-9;?<>=]*[ -/]*[@-~]/.exec(s))) {
-        // Another report we don't use.
-      } else if (s[0] === ESC && s.length < 64) {
+        // Another report or key we don't use.
+      } else if (PARTIAL.test(s)) {
         this.rest = s;
         return;
       } else {
@@ -54,59 +83,94 @@ export class InputParser {
   }
 }
 
-// Asks for the cell size and the text area, both in pixels.
-export function requestMetrics() {
-  out.write(`${ESC}[16t${ESC}[14t`);
+// The Kitty graphics protocol: one image per id, placed at the cursor without
+// moving it.
+function graphics(keys, payload = "") {
+  return `${ESC}_G${keys}${payload && ";"}${payload}${ESC}\\`;
 }
 
-// Where the screen goes: as large as fits above the status line, centered,
-// in the terminal's pixels so one image pixel is one screen pixel.
-export function fit(metrics, device) {
-  const { cellWidth, cellHeight } = metrics;
-  const cols = out.columns;
-  const rows = out.rows - 1;
-  const scale = Math.min((cols * cellWidth) / device.width, (rows * cellHeight) / device.height);
-  const width = Math.max(1, Math.floor(device.width * scale));
-  const height = Math.max(1, Math.floor(device.height * scale));
-  const col = Math.floor((cols * cellWidth - width) / 2 / cellWidth);
-  return { width, height, col, x: col * cellWidth, y: 0, rows: out.rows };
+function inline(keys, data) {
+  const parts = [];
+  for (let i = 0; i < data.length; i += 4096) {
+    const more = i + 4096 < data.length ? 1 : 0;
+    parts.push(graphics(i ? `m=${more}` : `${keys},m=${more}`, data.slice(i, i + 4096)));
+  }
+  return parts.join("");
 }
 
-// Draws raw RGB pixels. Alternates two image ids and deletes the old one
-// after placing the new, so the pane never shows an empty frame between them.
+const at = (row, col) => `${ESC}[${row};${col}H`;
+const FRAME_IDS = [1, 2];
+const ICON_ID = 10;
+
+// What the pane shows: the device screen, alternating two image ids and
+// deleting the old one after placing the new, so it never goes blank between
+// frames; and the text around it, written only when it changes.
 export class Screen {
   frame = 0;
   // "file": the terminal reads a temp file, no base64; "direct": bytes inline.
   medium = "file";
+  shown = { header: null, area: null, status: null, frames: false };
 
-  async draw(pixels, layout, status) {
-    const id = 1 + (this.frame % 2);
-    const old = 1 + ((this.frame + 1) % 2);
-    const head = `a=T,f=24,s=${layout.width},v=${layout.height},i=${id},p=1,C=1,q=1`;
+  async drawFrame(pixels, rect) {
+    const id = FRAME_IDS[this.frame % 2];
+    const old = FRAME_IDS[(this.frame + 1) % 2];
+    const keys = `a=T,f=32,s=${rect.width},v=${rect.height},i=${id},p=1,C=1,q=1`;
     let image;
     if (this.medium === "file") {
       // The name must say what it is, and it must sit in a temp folder.
-      const path = `/tmp/tty-graphics-protocol-rex-sim-${process.pid}-${this.frame}.rgb`;
+      const path = `/tmp/tty-graphics-protocol-rex-sim-${process.pid}-${this.frame}.rgba`;
       await writeFile(path, pixels);
-      image = `${ESC}_G${head},t=t;${Buffer.from(path).toString("base64")}${ESC}\\`;
+      image = graphics(`${keys},t=t`, Buffer.from(path).toString("base64"));
     } else {
-      const data = deflateSync(pixels, { level: 1 }).toString("base64");
-      const parts = [];
-      for (let i = 0; i < data.length; i += 4096) {
-        const more = i + 4096 < data.length ? 1 : 0;
-        parts.push(`${ESC}_G${i ? "" : `${head},o=z,`}m=${more};${data.slice(i, i + 4096)}${ESC}\\`);
-      }
-      image = parts.join("");
+      image = inline(`${keys},o=z`, deflateSync(pixels, { level: 1 }).toString("base64"));
     }
     this.frame++;
-    const ok = out.write(
-      `${ESC}[1;${layout.col + 1}H${image}${ESC}_Ga=d,d=I,i=${old},q=2${ESC}\\` +
-        `${ESC}[${layout.rows};1H${ESC}[2K${status}`,
-    );
-    if (!ok) await new Promise((resolve) => out.once("drain", resolve));
+    this.shown.frames = true;
+    await write(`${at(rect.row, rect.col + 1)}${image}${graphics(`a=d,d=I,i=${old},q=2`)}`);
   }
 
-  clear() {
-    out.write(`${ESC}_Ga=d,d=A,q=2${ESC}\\${ESC}[2J`);
+  clearFrames() {
+    if (!this.shown.frames) return;
+    this.shown.frames = false;
+    out.write(FRAME_IDS.map((id) => graphics(`a=d,d=I,i=${id},q=2`)).join(""));
   }
+
+  // chrome: { header, icons: [{ col, png }], area: string[] | null, status },
+  // with `area` null while the screen shows there.
+  drawChrome(chrome, layout) {
+    const { header, icons, area, status } = chrome;
+    let s = "";
+    const headerKey = header + icons.map((i) => `${i.col}:${i.key}`).join();
+    if (headerKey !== this.shown.header) {
+      this.shown.header = headerKey;
+      s += `${at(1, 1)}${ESC}[2K${header}`;
+      for (let i = 0; i < 16; i++) s += graphics(`a=d,d=I,i=${ICON_ID + i},q=2`);
+      icons.forEach((icon, i) => {
+        s += at(1, icon.col + 1) + inline(`a=T,f=100,i=${ICON_ID + i},p=1,C=1,q=2`, icon.png.toString("base64"));
+      });
+    }
+    const areaKey = area ? area.join("\n") : "";
+    if (areaKey !== this.shown.area) {
+      this.shown.area = areaKey;
+      if (area) this.clearFrames();
+      for (let row = layout.area.row; row < layout.area.row + layout.area.rows; row++) {
+        s += `${at(row, 1)}${ESC}[2K${area?.[row - layout.area.row] ?? ""}`;
+      }
+    }
+    if (status !== this.shown.status) {
+      this.shown.status = status;
+      s += `${at(layout.rows, 1)}${ESC}[2K${status}`;
+    }
+    if (s) out.write(s);
+  }
+
+  // Everything, as after a resize.
+  reset() {
+    this.shown = { header: null, area: null, status: null, frames: false };
+    out.write(`${DELETE_ALL}${ESC}[2J`);
+  }
+}
+
+async function write(s) {
+  if (!out.write(s)) await new Promise((resolve) => out.once("drain", resolve));
 }
