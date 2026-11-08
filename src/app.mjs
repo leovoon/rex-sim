@@ -61,7 +61,10 @@ export async function run({ device: deviceArg }) {
   let paused = false;
   let repairing = null;
   let quitting = false;
+  // The newest frame not yet drawn, and the last one that arrived, to draw
+  // again after the picker or a resize covered the screen.
   let latest = null;
+  let last = null;
   let notice = null;
   let drawn = 0;
   let fps = 0;
@@ -105,6 +108,10 @@ export async function run({ device: deviceArg }) {
     regions = chrome.regions;
     const placed = chrome.icons.filter((i) => icons.has(i.icon)).map((i) => ({ col: i.col, key: i.icon, png: icons.get(i.icon) }));
     screen.drawChrome({ ...chrome, icons: placed }, frame);
+    if (chrome.area === null && !screen.shown.frames && last && last.session === view.session) {
+      latest ??= last;
+      wakeDraw?.();
+    }
   }
 
   // The toolbar's icons, a button's size, in a color between the terminal's
@@ -316,7 +323,7 @@ export async function run({ device: deviceArg }) {
   async function stream(session) {
     try {
       for await (const bytes of session.frames) {
-        latest = { session, bytes };
+        latest = last = { session, bytes };
         wakeDraw?.();
       }
     } finally {
