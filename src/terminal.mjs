@@ -100,7 +100,6 @@ function inline(keys, data) {
 
 const at = (row, col) => `${ESC}[${row};${col}H`;
 const FRAME_IDS = [1, 2];
-const ICON_ID = 10;
 
 // What the pane shows: the device screen, alternating two image ids and
 // deleting the old one after placing the new, so it never goes blank between
@@ -109,7 +108,7 @@ export class Screen {
   frame = 0;
   // "file": the terminal reads a temp file, no base64; "direct": bytes inline.
   medium = "file";
-  shown = { header: null, area: null, status: null, frames: false, icons: 0 };
+  shown = { area: null, status: null, frames: false };
 
   async drawFrame(pixels, rect) {
     const id = FRAME_IDS[this.frame % 2];
@@ -135,21 +134,11 @@ export class Screen {
     out.write(FRAME_IDS.map((id) => graphics(`a=d,d=I,i=${id},q=2`)).join(""));
   }
 
-  // chrome: { header, icons: [{ col, key, png }], area: string[] | null, status },
-  // with `area` null while the screen shows there.
+  // chrome: { area: string[] | null, status }, with `area` null while the
+  // screen shows there.
   drawChrome(chrome, layout) {
-    const { header, icons, area, status } = chrome;
+    const { area, status } = chrome;
     let s = "";
-    const headerKey = header + icons.map((i) => `${i.col}:${i.key}`).join();
-    if (headerKey !== this.shown.header) {
-      this.shown.header = headerKey;
-      s += `${at(1, 1)}${ESC}[2K${header}`;
-      for (let i = 0; i < this.shown.icons; i++) s += graphics(`a=d,d=I,i=${ICON_ID + i},q=2`);
-      this.shown.icons = icons.length;
-      icons.forEach((icon, i) => {
-        s += at(1, icon.col + 1) + inline(`a=T,f=100,i=${ICON_ID + i},p=1,C=1,q=2`, icon.png.toString("base64"));
-      });
-    }
     const areaKey = area ? area.join("\n") : "";
     if (areaKey !== this.shown.area) {
       this.shown.area = areaKey;
@@ -167,7 +156,7 @@ export class Screen {
 
   // Everything, as after a resize.
   reset() {
-    this.shown = { header: null, area: null, status: null, frames: false, icons: 0 };
+    this.shown = { area: null, status: null, frames: false };
     out.write(`${DELETE_ALL}${ESC}[2J`);
   }
 }

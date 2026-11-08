@@ -3,10 +3,9 @@ import { homedir } from "node:os";
 import sharp from "sharp";
 import { canRepair, listDevices, platformOf } from "./devices.mjs";
 import { imageSize } from "./frames.mjs";
-import { iconPng } from "./icons.mjs";
 import { keyUsage } from "./keys.mjs";
 import { enter, leave, requestMetrics, InputParser, Screen } from "./terminal.mjs";
-import { BUTTONS, BUTTON_COLS, firstCursor, fraction, hit, layout, moveCursor, pickerEntries, render } from "./view.mjs";
+import { firstCursor, fraction, hit, layout, moveCursor, pickerEntries, render } from "./view.mjs";
 
 // The device picked last in any pane, where a new pane starts.
 const STATE_DIR = `${process.env.XDG_STATE_HOME || `${homedir()}/.local/state`}/rex-sim`;
@@ -20,7 +19,6 @@ const WHEEL_STEP = 0.03;
 const CORNER = 0.13;
 
 const clamp = (p) => ({ x: Math.min(1, Math.max(0, p.x)), y: Math.min(1, Math.max(0, p.y)) });
-const hex = (rgb) => `#${rgb.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
 const mix = (a, b, t) => a.map((v, i) => Math.round(v * t + b[i] * (1 - t)));
 
 // The pixels of a rounded corner that are partly or wholly outside it, as
@@ -56,7 +54,6 @@ export async function run({ device: deviceArg }) {
   let frameSize = null;
   let geometry = null;
   let regions = [];
-  let icons = new Map();
   let gesture = null;
   let paused = false;
   let repairing = null;
@@ -66,8 +63,6 @@ export async function run({ device: deviceArg }) {
   let latest = null;
   let last = null;
   let notice = null;
-  let drawn = 0;
-  let fps = 0;
   let mask = null;
   let wakeLoop = null;
   let wakeDraw = null;
@@ -105,26 +100,13 @@ export async function run({ device: deviceArg }) {
   function redraw() {
     if (!geometry || paused || quitting) return;
     const selection = `48;2;${mix(colors.foreground, colors.background, 0.16).join(";")}`;
-    const chrome = render({ view, picker, device: target(), fps, notice, selection }, geometry, actions);
+    const chrome = render({ view, picker, device: target(), notice, selection }, geometry, actions);
     regions = chrome.regions;
-    const placed = chrome.icons.filter((i) => icons.has(i.icon)).map((i) => ({ col: i.col, key: i.icon, png: icons.get(i.icon) }));
-    screen.drawChrome({ ...chrome, icons: placed }, geometry);
+    screen.drawChrome(chrome, geometry);
     if (chrome.area === null && !screen.shown.frames && last && last.session === view.session) {
       latest ??= last;
       wakeDraw?.();
     }
-  }
-
-  // The toolbar's icons, a button's size, in a color between the terminal's
-  // foreground and background.
-  async function renderIcons() {
-    const { cellWidth, cellHeight } = metrics;
-    const color = hex(mix(colors.foreground, colors.background, 0.85));
-    const names = BUTTONS.map((b) => b.icon);
-    const pngs = await Promise.all(names.map((n) => iconPng(n, cellWidth * BUTTON_COLS, cellHeight, color)));
-    icons = new Map(names.map((n, i) => [n, pngs[i]]));
-    screen.shown.header = null;
-    redraw();
   }
 
   async function pick(device) {
@@ -250,11 +232,11 @@ export async function run({ device: deviceArg }) {
       else if (e.type === "command") actions.command(e.name, e.arg);
       else if (e.type === "color") {
         colors = { ...colors, [e.slot]: e.rgb };
-        if (metrics) renderIcons();
+        redraw();
       } else if (e.type === "report" && e.kind === 6) {
         metrics = { cellWidth: e.width, cellHeight: e.height };
         relayout();
-        renderIcons();
+        redraw();
       } else if (e.type === "graphics" && !e.reply.endsWith(";OK")) {
         // A terminal that can't read our temp file gets the pixels inline.
         if (screen.medium === "file") {
@@ -284,11 +266,6 @@ export async function run({ device: deviceArg }) {
   }
   for (const signal of ["SIGTERM", "SIGHUP"]) process.on(signal, quit);
 
-  setInterval(() => {
-    fps = drawn;
-    drawn = 0;
-    if (view.kind === "streaming") redraw();
-  }, 1000).unref();
 
   // Draws the newest frame whenever one is waiting; frames that arrive while
   // one draws replace each other, so a slow draw skips frames, never lags.
@@ -314,7 +291,6 @@ export async function run({ device: deviceArg }) {
       if (view.session !== session || picker || paused || rect !== geometry.screen) continue;
       for (let i = 0; i < mask.offsets.length; i++) pixels[mask.offsets[i]] = mask.alphas[i];
       await screen.drawFrame(pixels, rect);
-      drawn++;
     }
   }
 

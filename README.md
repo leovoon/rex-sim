@@ -8,8 +8,8 @@ Pick any simulator or emulator on your Mac and use it right in Rex. Run your mob
 
 - **See the device live.** The screen updates up to about 40 times a second while it moves.
 - **Use it in place.** Click to tap, drag to swipe, scroll with your mouse or trackpad, and type with your keyboard. A drag that starts at the bottom edge of an iPhone goes home, as on the phone.
-- **Press its buttons.** The buttons at the top right press Home, Lock and the volume keys, rotate the device, and on iOS show or hide the on-screen keyboard.
-- **Switch devices.** Click the device name at the top left, or press Ctrl-P. The picker lists every iOS simulator and Android emulator on your Mac, with the running ones marked green. Pick one that's off and it starts. Android emulators run without a window of their own.
+- **Press its buttons.** Home, Lock, the volume keys, Rotate and the iOS on-screen keyboard are actions in the command palette, so you can bind them to keys.
+- **Switch devices.** Click the device name at the bottom left, or press Ctrl-P. The picker lists every iOS simulator and Android emulator on your Mac, with the running ones marked green. Pick one that's off and it starts. Android emulators run without a window of their own.
 - **Show two at once.** Each pane has its own device, so an iPhone and an Android emulator can run side by side. A new pane starts on the device you picked last.
 - **Fix stuck taps.** On Xcode 27, taps on a simulator sometimes stop working. Repair input, at the bottom of the picker, fixes them. It restarts SpringBoard, so open apps close.
 
@@ -93,7 +93,3 @@ rex-sim sends nothing over the internet itself.
 - Rex shows pictures only through the Kitty graphics protocol, so the pane must be a Rex terminal, or another terminal that draws Kitty graphics and reports the mouse in pixels.
 - Of the shortcuts, only Ctrl with a letter reaches the device, and on Android it types just the letter.
 - On a Rex without minimized floating panes, Simulator: Toggle closes a floating pane instead of hiding it.
-
-## License
-
-The icons are from [Lucide](https://lucide.dev), under the ISC license in `icons/LICENSE-lucide.txt`.

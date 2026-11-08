@@ -1,19 +1,5 @@
 import { PLATFORMS, canRepair } from "./devices.mjs";
 
-// Each toolbar button runs a command when the session's input has `needs`,
-// so Android, which has no software keyboard, shows no keyboard button.
-export const BUTTONS = [
-  { command: "home", icon: "house", needs: "button" },
-  { command: "lock", icon: "lock", needs: "button" },
-  { command: "volume-down", icon: "volume-1", needs: "volume" },
-  { command: "volume-up", icon: "volume-2", needs: "volume" },
-  { command: "rotate", icon: "rotate-ccw", needs: "rotate" },
-  { command: "keyboard", icon: "keyboard", needs: "softwareKeyboard" },
-];
-// A button is an icon two cells wide, then a gap of one.
-export const BUTTON_COLS = 2;
-const BUTTON_STEP = 3;
-
 const SGR = { dim: "2", green: "32", red: "31", reverse: "7" };
 
 // One row of styled segments, cut to `width` cells. `base`, a style name or
@@ -44,10 +30,10 @@ function wrap(text, width) {
 }
 
 // Where things go, in cells (1-based rows and columns) and in the terminal's
-// pixels, which are the mouse's units: the header on the first row, the status
-// line on the last, and between them the screen, as large as fits, centered.
+// pixels, which are the mouse's units: the status line on the last row, and
+// above it the screen, as large as fits, centered.
 export function layout({ cols, rows, cellWidth, cellHeight }, frame) {
-  const area = { row: 2, rows: Math.max(0, rows - 2), x: 0, y: cellHeight, width: cols * cellWidth, height: Math.max(0, rows - 2) * cellHeight };
+  const area = { row: 1, rows: Math.max(0, rows - 1), x: 0, y: 0, width: cols * cellWidth, height: Math.max(0, rows - 1) * cellHeight };
   let screen = null;
   if (frame && area.rows > 0) {
     const scale = Math.min(area.width / frame.width, area.height / frame.height);
@@ -60,10 +46,10 @@ export function layout({ cols, rows, cellWidth, cellHeight }, frame) {
   return { cols, rows, cellWidth, cellHeight, area, screen };
 }
 
-// The view's text, for the area under the header.
+// The view's text, for the area above the status line.
 function message(view) {
   switch (view.kind) {
-    case "empty": return "Pick a device above";
+    case "empty": return "Press Ctrl-P to pick a device";
     case "connecting": return `Connecting to ${view.device.name}…`;
     case "booting": return `Booting ${view.device.name}…`;
     case "message":
@@ -120,30 +106,15 @@ export const fraction = (rect, e) => ({ x: (e.x - rect.x) / rect.width, y: (e.y 
 
 export const hit = (regions, e) => regions.find((r) => e.x >= r.x0 && e.x < r.x1 && e.y >= r.y0 && e.y < r.y1);
 
-// state: { view, picker: null | { devices, cursor }, device (this pane's), fps, notice,
+// state: { view, picker: null | { devices, cursor }, device (this pane's), notice,
 //   selection (SGR parameters for the picker's current row) }
-// -> the header (with its icons by column), the area's rows (null while the
-// screen shows there), the status line, and the regions a click can hit, in
-// pixels, each with `run(mouseEvent)`.
+// -> the area's rows (null while the screen shows there), the status line,
+// and the regions a click can hit, in pixels, each with `run(mouseEvent)`.
 export function render(state, geometry, actions) {
   const { view, picker, device } = state;
   const { cols, cellWidth: cw, cellHeight: ch, area } = geometry;
   const regions = [];
   const streaming = view.kind === "streaming";
-
-  const buttons = streaming ? BUTTONS.filter((b) => typeof view.session.input[b.needs] === "function") : [];
-  const toolbarCols = buttons.length * BUTTON_STEP;
-  const icons = buttons.map((b, i) => {
-    const col = cols - toolbarCols + 1 + i * BUTTON_STEP;
-    regions.push({ x0: col * cw, y0: 0, x1: (col + BUTTON_COLS) * cw, y1: ch, run: (e) => e.action === "press" && actions.command(b.command) });
-    return { col, icon: b.icon };
-  });
-
-  const dot = streaming ? "green" : view.kind === "error" ? "red" : "dim";
-  const label = device ? `${device.name} · ${device.os}` : "Select device";
-  const headerWidth = Math.max(0, cols - toolbarCols - 1);
-  const header = line([[" "], ["●", dot], [` ${label} ▾`]], headerWidth);
-  regions.push({ x0: 0, y0: 0, x1: Math.min(headerWidth, label.length + 5) * cw, y1: ch, run: (e) => e.action === "press" && actions.togglePicker() });
 
   let rows = null;
   let hints;
@@ -173,7 +144,7 @@ export function render(state, geometry, actions) {
         },
       });
     }
-    hints = `${view.session.device.name} · ${state.fps} fps · click to tap, drag to swipe · ctrl-p devices · ctrl-c quit`;
+    hints = "ctrl-p devices · ctrl-c quit";
   } else {
     const lines = wrap(message(view), Math.max(10, cols - 4));
     const top = Math.max(0, Math.floor((area.rows - lines.length) / 2));
@@ -184,6 +155,11 @@ export function render(state, geometry, actions) {
     hints = "ctrl-p devices · ctrl-c quit";
   }
 
-  const status = line([[[hints, state.notice].filter(Boolean).join(" · "), "dim"]], cols - 1);
-  return { header, icons, area: rows, status, regions };
+  // The device on the status line, which opens the picker like Ctrl-P.
+  const dot = streaming ? "green" : view.kind === "error" ? "red" : "dim";
+  const label = device ? `${device.name} · ${device.os}` : "Select device";
+  const statusY = (geometry.rows - 1) * ch;
+  regions.push({ x0: 0, y0: statusY, x1: (label.length + 5) * cw, y1: statusY + ch, run: (e) => e.action === "press" && actions.togglePicker() });
+  const status = line([[" "], ["●", dot], [` ${label} ▾`], [`   ${[hints, state.notice].filter(Boolean).join(" · ")}`, "dim"]], cols - 1);
+  return { area: rows, status, regions };
 }
