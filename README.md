@@ -2,6 +2,8 @@
 
 Your iOS simulator, Android emulator, and real Android device, live in a [Rex](https://www.superlogical.com/rex) pane, next to your code and terminals.
 
+> **Fork.** This is a fork of [wobsoriano/rex-sim](https://github.com/wobsoriano/rex-sim), which streams iOS simulators and Android emulators into a Rex pane. This fork adds support for **physical Android devices** (streaming via a raw scrcpy video socket, and fast input via a persistent adb shell or the scrcpy control channel). All credit for the original plugin and its design goes to the upstream author.
+
 Pick any simulator or emulator on your Mac — or a physical Android phone over adb — and use it right in Rex. Run your mobile tests and watch them tap through the app while the results print beside it.
 
 ## What you can do
