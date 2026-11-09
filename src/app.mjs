@@ -91,7 +91,8 @@ export async function run({ device: deviceArg }) {
   let repairing = null;
   let quitting = false;
   let qualityMenu = false;
-  let streamSession = null;
+  // The streaming session, kept even while the settings menu hides the view.
+  let activeSession = null;
   // The newest frame not yet drawn, and the last one that arrived, to draw
   // again after the picker or a resize covered the screen.
   let latest = null;
@@ -104,6 +105,10 @@ export async function run({ device: deviceArg }) {
   // This pane's device: the one picked here or passed in, else the first running one.
   const target = () => devices.find((d) => d.id === choice) ?? devices.find((d) => d.booted) ?? null;
   const input = () => (view.kind === "streaming" ? view.session.input : null);
+  const stopActive = () => {
+    activeSession?.close();
+    activeSession = null;
+  };
   const rest = (ms) =>
     new Promise((resolve) => {
       const timer = setTimeout(resolve, ms);
@@ -122,6 +127,7 @@ export async function run({ device: deviceArg }) {
 
   function stopStream() {
     if (view.kind === "streaming") view.session.close();
+    stopActive();
   }
 
   function relayout() {
@@ -169,27 +175,27 @@ export async function run({ device: deviceArg }) {
   function openQuality() {
     if (view.kind !== "streaming" || qualityMenu) return;
     qualityMenu = true;
-    streamSession = view.session;
+    activeSession = view.session;
     show({ kind: "settings", text: settingsText() });
   }
 
   function closeQuality() {
     if (!qualityMenu) return;
     qualityMenu = false;
-    const session = streamSession;
-    streamSession = null;
-    show({ kind: "streaming", session });
+    const session = activeSession;
+    activeSession = null;
+    if (session) show({ kind: "streaming", session });
+    else nudge();
   }
 
+  // Cycle a setting, apply it, and restart the stream quietly behind the
+  // menu; the menu stays open so more rows can be tweaked before esc.
   function cycleSetting(row) {
     row.current = (row.current + 1) % row.values.length;
     const entry = row.values[row.current];
     for (const [name, value] of Object.entries(entry.env)) process.env[name] = value;
-    qualityMenu = false;
-    const session = streamSession;
-    streamSession = null;
-    session?.close();
-    show({ kind: "message", text: `${row.label}: ${entry.label} — restarting stream…` });
+    stopActive();
+    show({ kind: "settings", text: settingsText() });
     nudge();
   }
 
@@ -409,7 +415,9 @@ export async function run({ device: deviceArg }) {
           session.close();
           continue;
         }
-        show({ kind: "streaming", session });
+        activeSession = session;
+        if (qualityMenu) show({ kind: "settings", text: settingsText() });
+        else show({ kind: "streaming", session });
         await stream(session);
       } catch (e) {
         if (quitting) return;
