@@ -177,6 +177,7 @@ async function startStream(serial) {
     rmSync(fifo, { force: true });
   };
   const stop = () => {
+    clearTimeout(firstFrameTimer);
     killChildren();
     server.close();
     for (const res of viewers) res.destroy();
@@ -194,13 +195,17 @@ async function startStream(serial) {
   ], { stdio: ["ignore", "pipe", "inherit"] });
 
   const parser = new MjpegParser();
+  let sawFrame = false;
   ffmpeg.stdout.on("data", (chunk) => {
     parser.push(chunk);
     for (const jpeg of parser.next()) {
+      sawFrame = true;
       last = jpeg;
       for (const res of viewers) send(res, last);
     }
   });
+  // A phone with an idle screen may not send any frame; don't hang the pane.
+  const firstFrameTimer = setTimeout(() => { if (!sawFrame) stop(); }, 20000);
   ffmpeg.on("exit", stop);
   scrcpy.on("exit", stop);
   ffmpeg.on("error", stop);
