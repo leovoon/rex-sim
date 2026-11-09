@@ -48,6 +48,10 @@ const SETTING_ROWS = [
     { label: "off", env: { REX_SIM_STAY_AWAKE: "0" } },
     { label: "on", env: { REX_SIM_STAY_AWAKE: "1" } },
   ] },
+  { key: "9", label: "audio", current: 0, values: [
+    { label: "off", env: { REX_SIM_AUDIO: "0" } },
+    { label: "on", env: { REX_SIM_AUDIO: "1" } },
+  ] },
 ];
 
 const clamp = (p) => ({ x: Math.min(1, Math.max(0, p.x)), y: Math.min(1, Math.max(0, p.y)) });
@@ -317,7 +321,7 @@ export async function run({ device: deviceArg }) {
         return show({ kind: "settings", text: settingsText() });
       }
       if (key === "left" || key === "h") return cycleRow(SETTING_ROWS[settingsMenu.cursor], -1);
-      if (key === "right" || key === "l") return cycleRow(SETTING_ROWS[settingsMenu.cursor], 1);
+      if (key === "right" || key === "l" || key === " ") return cycleRow(SETTING_ROWS[settingsMenu.cursor], 1);
       const row = SETTING_ROWS.find((r) => r.key === key);
       if (row) {
         settingsMenu.cursor = SETTING_ROWS.indexOf(row);

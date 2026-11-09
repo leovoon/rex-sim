@@ -36,9 +36,12 @@ Physical-device stream quality is tunable with environment variables (set them b
 | `REX_SIM_CODEC` | `h265` | Capture codec: `h265` (HEVC, smaller on wifi) or `h264`. |
 | `REX_SIM_SHOW_TOUCHES` | `0` | `1` shows touch feedback on the device. |
 | `REX_SIM_STAY_AWAKE` | `0` | `1` keeps the device awake while streaming. |
+| `REX_SIM_AUDIO` | `0` | `1` forwards device audio to the host speakers (uses the mkv pipeline). |
+| `REX_SIM_AUDIO_SOURCE` | `output` | Audio source: `output`, `playback`, `mic`, `mic-unprocessed`, `voice-call`, etc. |
+| `REX_SIM_AUDIO_CODEC` | `opus` | Audio codec: `opus`, `aac`, `flac` (`raw` unsupported). |
 | `REX_SIM_POWER_OFF_ON_CLOSE` | `0` | `1` turns the screen off when the pane closes. |
 | `REX_SIM_INPUT` | — | `control` opts into the scrcpy control channel (faster, but blocked on some OEMs until “USB debugging (Security settings)” is enabled). |
-| `REX_SIM_PIPE` | — | `mkv` forces the older Matroska-over-fifo pipeline; the raw H.264/HEVC socket is the default. |
+| `REX_SIM_PIPE` | — | `mkv` forces the older Matroska-over-fifo pipeline; the raw H.264/HEVC socket is the default. If the raw socket connects but delivers no frames (some devices), rex-sim auto-switches to the mkv pipeline. |
 | `REX_SIM_SCRCPY` / `REX_SIM_FFMPEG` / `REX_SIM_SCRCPY_SERVER` | — | Override tool paths. |
 
 With [Amber](https://github.com/rawnly/amber), add rex-sim to your plugins in `~/.config/rex/init.lua`:

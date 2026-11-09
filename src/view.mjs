@@ -143,7 +143,7 @@ export function render(state, geometry, actions) {
       const pad = " ".repeat(Math.max(0, Math.floor((cols - t.length) / 2)));
       return line([[pad], [t, i === top ? "" : selected ? state.selection ?? "reverse" : "dim"]], cols);
     });
-    hints = "↑↓ move · ←→ cycle · enter apply · esc discard";
+    hints = "↑↓ move · ←→/space cycle · enter apply · esc discard";
   } else if (streaming) {
     const screen = geometry.screen;
     if (screen) {

@@ -28,6 +28,9 @@ const IDLE_MS = 3000;
 //   REX_SIM_CODEC      h265 (default, smaller on wifi) or h264
 //   REX_SIM_SHOW_TOUCHES 1 to show touch feedback on the device
 //   REX_SIM_STAY_AWAKE  1 to keep the device awake while streaming
+//   REX_SIM_AUDIO  1 to forward device audio (uses the mkv pipeline)
+//   REX_SIM_AUDIO_SOURCE  output (default), playback, mic, …
+//   REX_SIM_AUDIO_CODEC  opus (default), aac, flac (raw unsupported)
 //   REX_SIM_POWER_OFF_ON_CLOSE  1 to turn the screen off when the pane closes
 const clampInt = (v, fallback, [min, max]) => {
   const n = Number(v);
@@ -44,6 +47,9 @@ export function qualityConfig(env = process.env) {
     codec,
     showTouches: bool(env.REX_SIM_SHOW_TOUCHES),
     stayAwake: bool(env.REX_SIM_STAY_AWAKE),
+    audio: bool(env.REX_SIM_AUDIO),
+    audioSource: env.REX_SIM_AUDIO_SOURCE || "output",
+    audioCodec: env.REX_SIM_AUDIO_CODEC || "opus",
     powerOffOnClose: bool(env.REX_SIM_POWER_OFF_ON_CLOSE),
   };
 }
@@ -179,7 +185,9 @@ export class MjpegParser {
 // latest frame sent to a new viewer right away.
 //
 // Two producers feed ffmpeg: the raw video socket (default) and the
-// Matroska-over-fifo pipeline (fallback, REX_SIM_PIPE=mkv).
+// Matroska-over-fifo pipeline (fallback, REX_SIM_PIPE=mkv). If the raw
+// socket connects but delivers no frames, we switch to the mkv pipeline
+// automatically rather than hang the pane.
 async function startStream(serial) {
   if (!toolsAvailable()) throw new Error("needs scrcpy and ffmpeg (brew install scrcpy ffmpeg)");
   const q = qualityConfig();
@@ -210,9 +218,7 @@ async function startStream(serial) {
     });
   });
 
-  const killChildren = () => {
-    if (stopped) return;
-    stopped = true;
+  const killAll = () => {
     clearTimeout(idle);
     for (const child of children) {
       if (child.exitCode != null) continue;
@@ -224,10 +230,14 @@ async function startStream(serial) {
     for (const cleanup of cleanups) {
       try { cleanup(); } catch {}
     }
+    children.length = 0;
+    cleanups.length = 0;
   };
   const stop = () => {
+    if (stopped) return;
+    stopped = true;
     clearTimeout(firstFrameTimer);
-    killChildren();
+    killAll();
     server.close();
     for (const res of viewers) res.destroy();
     viewers.clear();
@@ -235,7 +245,24 @@ async function startStream(serial) {
 
   const parser = new MjpegParser();
   let sawFrame = false;
-  const watch = (ffmpeg) => {
+  let fellBack = false;
+
+  // The raw video socket connected but delivered no frames (some devices
+  // never start streaming on a raw server). Switch producers to the mkv
+  // pipeline instead of hanging the pane.
+  async function fallbackToMkv() {
+    if (fellBack || stopped) return;
+    fellBack = true;
+    console.error("raw video socket silent; falling back to mkv pipe");
+    killAll();
+    try {
+      watch(await startMkv(), "mkv");
+    } catch (e) {
+      stop();
+    }
+  }
+
+  const watch = (ffmpeg, mode) => {
     children.push(ffmpeg);
     ffmpeg.stdout.on("data", (chunk) => {
       parser.push(chunk);
@@ -247,8 +274,13 @@ async function startStream(serial) {
     });
     ffmpeg.on("exit", stop);
     ffmpeg.on("error", stop);
-    // A phone with an idle screen may not send any frame; don't hang the pane.
-    firstFrameTimer = setTimeout(() => { if (!sawFrame) stop(); }, 20000);
+    // A phone with an idle screen may not send any frame; don't hang the
+    // pane. For the raw producer, give the mkv pipeline a chance first.
+    firstFrameTimer = setTimeout(() => {
+      if (sawFrame || fellBack) return;
+      if (mode === "raw") fallbackToMkv();
+      else stop();
+    }, 20000);
   };
 
   // Preferred: talk to our own video-only scrcpy server and feed its raw
@@ -278,41 +310,62 @@ async function startStream(serial) {
     if (spawnSync("sh", ["-c", `mkfifo "${fifo}"`]).status !== 0) {
       throw new Error("couldn't create a pipe for the phone's stream");
     }
-    const scrcpy = spawn(SCRCPY, [
-      "--no-playback", "--no-window", "--no-audio", "--no-control",
+    const cliArgs = [
+      "--no-playback", "--no-window", "--no-control",
+      // Audio forwarding rides the mkv pipeline: the container demuxes the
+      // audio track cleanly, which the raw video socket can't (no demuxer
+      // for scrcpy's raw audio framing). scrcpy captures audio by default
+      // unless --no-audio; pass the source/codec through explicitly.
+      ...(q.audio ? [
+        `--audio-source=${q.audioSource}`,
+        `--audio-codec=${q.audioCodec}`,
+      ] : ["--no-audio"]),
       `--video-codec=${q.codec}`, `--max-size=${q.width}`,
       `--video-bit-rate=${q.bitrate}`, `--max-fps=${q.fps}`,
       `--record=${fifo}`, "--record-format=mkv", "-s", serial,
-    ]);
+    ];
+    const scrcpy = spawn(SCRCPY, cliArgs);
     children.push(scrcpy);
     scrcpy.on("exit", stop);
     scrcpy.on("error", stop);
     cleanups.push(() => rmSync(fifo, { force: true }));
-    const ffmpeg = spawn(FFMPEG, [
+    const ffmpegArgs = [
       "-loglevel", "error", "-nostdin",
       // -fflags nobuffer starves the matroska-over-fifo demuxer; keep the
       // other low-latency flags instead.
       "-flags", "low_delay", "-analyzeduration", "0", "-probesize", "32768",
       "-f", "matroska", "-i", fifo,
-      "-an", "-sn",
-      "-c:v", "mjpeg", "-q:v", String(q.jpegQ),
+      "-sn",
+      "-map", "0:v", "-c:v", "mjpeg", "-q:v", String(q.jpegQ),
       "-f", "image2pipe", "-",
-    ], { stdio: ["ignore", "pipe", "inherit"] });
+    ];
+    if (q.audio) {
+      // Decode the mkv audio track to the host's default output (the `?`
+      // keeps the map optional if the device sent no audio track).
+      ffmpegArgs.push(
+        "-map", "0:a?", "-c:a", "pcm_s16le",
+        "-f", "audiotoolbox", "-",
+      );
+    }
+    const ffmpeg = spawn(FFMPEG, ffmpegArgs, { stdio: ["ignore", "pipe", "inherit"] });
     return ffmpeg;
   }
 
   let ffmpeg;
-  if (process.env.REX_SIM_PIPE === "mkv") {
+  let mode = "raw";
+  if (process.env.REX_SIM_PIPE === "mkv" || q.audio) {
+    mode = "mkv";
     ffmpeg = await startMkv();
   } else {
     try {
       ffmpeg = await startRaw();
     } catch (e) {
       console.error(`raw video unavailable (${e.message}); falling back to mkv pipe`);
+      mode = "mkv";
       ffmpeg = await startMkv();
     }
   }
-  watch(ffmpeg);
+  watch(ffmpeg, mode);
 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   return { port: server.address().port, close: stop };
