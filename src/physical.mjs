@@ -26,18 +26,25 @@ const IDLE_MS = 3000;
 //   REX_SIM_FPS        maximum capture frame rate (10-120, default 60)
 //   REX_SIM_JPEG_Q     ffmpeg MJPEG quality, 1 best - 31 worst (default 4)
 //   REX_SIM_CODEC      h265 (default, smaller on wifi) or h264
+//   REX_SIM_SHOW_TOUCHES 1 to show touch feedback on the device
+//   REX_SIM_STAY_AWAKE  1 to keep the device awake while streaming
+//   REX_SIM_POWER_OFF_ON_CLOSE  1 to turn the screen off when the pane closes
 const clampInt = (v, fallback, [min, max]) => {
   const n = Number(v);
   return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
 };
 export function qualityConfig(env = process.env) {
   const codec = env.REX_SIM_CODEC === "h264" ? "h264" : "h265";
+  const bool = (v) => v === "1" || v === true;
   return {
     width: clampInt(env.REX_SIM_WIDTH, 540, [240, 1080]),
     bitrate: env.REX_SIM_BITRATE || "4M",
     fps: clampInt(env.REX_SIM_FPS, 60, [10, 120]),
     jpegQ: clampInt(env.REX_SIM_JPEG_Q, 4, [1, 31]),
     codec,
+    showTouches: bool(env.REX_SIM_SHOW_TOUCHES),
+    stayAwake: bool(env.REX_SIM_STAY_AWAKE),
+    powerOffOnClose: bool(env.REX_SIM_POWER_OFF_ON_CLOSE),
   };
 }
 

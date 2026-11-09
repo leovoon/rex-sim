@@ -24,12 +24,16 @@ test("no devices lists none", () => {
   assert.deepEqual(parseDevices("List of devices attached\n"), []);
 });
 
+const base = { width: 540, bitrate: "4M", fps: 60, jpegQ: 4, codec: "h265", showTouches: false, stayAwake: false, powerOffOnClose: false };
+
 test("quality config defaults and clamps", () => {
-  assert.deepEqual(qualityConfig({}), { width: 540, bitrate: "4M", fps: 60, jpegQ: 4, codec: "h265" });
-  assert.deepEqual(qualityConfig({ REX_SIM_WIDTH: "720", REX_SIM_BITRATE: "8M", REX_SIM_FPS: "30", REX_SIM_JPEG_Q: "2", REX_SIM_CODEC: "h264" }),
-    { width: 720, bitrate: "8M", fps: 30, jpegQ: 2, codec: "h264" });
-  assert.deepEqual(qualityConfig({ REX_SIM_WIDTH: "9999", REX_SIM_FPS: "0", REX_SIM_JPEG_Q: "99" }),
-    { width: 540, bitrate: "4M", fps: 60, jpegQ: 4, codec: "h265" });
+  assert.deepEqual(qualityConfig({}), base);
+  assert.deepEqual(qualityConfig({
+    REX_SIM_WIDTH: "720", REX_SIM_BITRATE: "8M", REX_SIM_FPS: "30", REX_SIM_JPEG_Q: "2",
+    REX_SIM_CODEC: "h264", REX_SIM_SHOW_TOUCHES: "1", REX_SIM_STAY_AWAKE: "1",
+  }),
+    { ...base, width: 720, bitrate: "8M", fps: 30, jpegQ: 2, codec: "h264", showTouches: true, stayAwake: true });
+  assert.deepEqual(qualityConfig({ REX_SIM_WIDTH: "9999", REX_SIM_FPS: "0", REX_SIM_JPEG_Q: "99" }), base);
 });
 
 test("mjpeg parser joins frames across arbitrary chunk boundaries", () => {

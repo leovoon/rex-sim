@@ -18,15 +18,36 @@ const WHEEL_STEP = 0.03;
 // The screen's rounded corners, as a share of its width.
 const CORNER = 0.13;
 
-// Stream quality presets, reachable with `q` while streaming. Choosing one
-// sets the REX_SIM_* environment variables (which the physical stream reads on
-// every session start) and restarts the stream.
-const QUALITIES = [
-  { key: "1", label: "smooth 360", env: { REX_SIM_WIDTH: "360", REX_SIM_FPS: "60", REX_SIM_BITRATE: "3M", REX_SIM_JPEG_Q: "6" } },
-  { key: "2", label: "balanced 540", env: { REX_SIM_WIDTH: "540", REX_SIM_FPS: "60", REX_SIM_BITRATE: "4M", REX_SIM_JPEG_Q: "4" } },
-  { key: "3", label: "sharp 720", env: { REX_SIM_WIDTH: "720", REX_SIM_FPS: "60", REX_SIM_BITRATE: "8M", REX_SIM_JPEG_Q: "3" } },
-  { key: "4", label: "max 1080", env: { REX_SIM_WIDTH: "1080", REX_SIM_FPS: "30", REX_SIM_BITRATE: "10M", REX_SIM_JPEG_Q: "2" } },
-  { key: "5", label: "hevc 540", env: { REX_SIM_WIDTH: "540", REX_SIM_FPS: "60", REX_SIM_BITRATE: "4M", REX_SIM_JPEG_Q: "4", REX_SIM_CODEC: "h265" } },
+// Stream settings, reachable with `q` while streaming. Each row cycles
+// through its values on the matching digit; choosing sets the REX_SIM_*
+// environment variables (which the physical stream reads on every session
+// start) and restarts the stream.
+const SETTING_ROWS = [
+  {
+    key: "1", label: "presets", current: 1, values: [
+      { label: "smooth 360", env: { REX_SIM_WIDTH: "360", REX_SIM_FPS: "60", REX_SIM_BITRATE: "3M", REX_SIM_JPEG_Q: "6" } },
+      { label: "balanced 540", env: { REX_SIM_WIDTH: "540", REX_SIM_FPS: "60", REX_SIM_BITRATE: "4M", REX_SIM_JPEG_Q: "4" } },
+      { label: "sharp 720", env: { REX_SIM_WIDTH: "720", REX_SIM_FPS: "60", REX_SIM_BITRATE: "8M", REX_SIM_JPEG_Q: "3" } },
+      { label: "max 1080", env: { REX_SIM_WIDTH: "1080", REX_SIM_FPS: "30", REX_SIM_BITRATE: "10M", REX_SIM_JPEG_Q: "2" } },
+      { label: "hevc 540", env: { REX_SIM_WIDTH: "540", REX_SIM_FPS: "60", REX_SIM_BITRATE: "4M", REX_SIM_JPEG_Q: "4", REX_SIM_CODEC: "h265" } },
+    ],
+  },
+  { key: "2", label: "codec", current: 1, values: [
+    { label: "h264", env: { REX_SIM_CODEC: "h264" } },
+    { label: "h265", env: { REX_SIM_CODEC: "h265" } },
+  ] },
+  { key: "3", label: "width", current: 1, values: [360, 540, 720, 1080].map((w) => ({ label: String(w), env: { REX_SIM_WIDTH: String(w) } })) },
+  { key: "4", label: "fps", current: 3, values: [15, 30, 60, 90].map((f) => ({ label: String(f), env: { REX_SIM_FPS: String(f) } })) },
+  { key: "5", label: "bitrate", current: 1, values: ["2M", "4M", "8M", "12M"].map((b) => ({ label: b, env: { REX_SIM_BITRATE: b } })) },
+  { key: "6", label: "jpeg q", current: 1, values: [8, 6, 4, 2].map((q) => ({ label: String(q), env: { REX_SIM_JPEG_Q: String(q) } })) },
+  { key: "7", label: "show-touches", current: 0, values: [
+    { label: "off", env: { REX_SIM_SHOW_TOUCHES: "0" } },
+    { label: "on", env: { REX_SIM_SHOW_TOUCHES: "1" } },
+  ] },
+  { key: "8", label: "stay-awake", current: 0, values: [
+    { label: "off", env: { REX_SIM_STAY_AWAKE: "0" } },
+    { label: "on", env: { REX_SIM_STAY_AWAKE: "1" } },
+  ] },
 ];
 
 const clamp = (p) => ({ x: Math.min(1, Math.max(0, p.x)), y: Math.min(1, Math.max(0, p.y)) });
@@ -143,13 +164,13 @@ export async function run({ device: deviceArg }) {
     nudge();
   }
 
-  const qualityHint = () => `quality (1-4): ${QUALITIES.map((q) => `${q.key} ${q.label}`).join(" · ")} [esc]`;
+  const settingsText = () => ["stream settings (esc close)", ...SETTING_ROWS.map((r) => ` ${r.key} ${r.label} · ${r.values[r.current].label}`)].join("\n");
 
   function openQuality() {
     if (view.kind !== "streaming" || qualityMenu) return;
     qualityMenu = true;
     streamSession = view.session;
-    show({ kind: "message", text: qualityHint() });
+    show({ kind: "message", text: settingsText() });
   }
 
   function closeQuality() {
@@ -160,13 +181,15 @@ export async function run({ device: deviceArg }) {
     show({ kind: "streaming", session });
   }
 
-  function applyQuality(entry) {
+  function cycleSetting(row) {
+    row.current = (row.current + 1) % row.values.length;
+    const entry = row.values[row.current];
     for (const [name, value] of Object.entries(entry.env)) process.env[name] = value;
     qualityMenu = false;
     const session = streamSession;
     streamSession = null;
     session?.close();
-    show({ kind: "message", text: `${entry.label} — restarting stream…` });
+    show({ kind: "message", text: `${row.label}: ${entry.label} — restarting stream…` });
     nudge();
   }
 
@@ -257,8 +280,8 @@ export async function run({ device: deviceArg }) {
     if (picker) return onPickerKey(key);
     if (qualityMenu) {
       if (key === "\x1b") return closeQuality();
-      const entry = QUALITIES.find((q) => q.key === key);
-      if (entry) return applyQuality(entry);
+      const row = SETTING_ROWS.find((r) => r.key === key);
+      if (row) return cycleSetting(row);
       return;
     }
     if (key === "\x10") return openPicker();

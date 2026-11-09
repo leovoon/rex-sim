@@ -211,8 +211,11 @@ export async function startVideoSocket(serial, q = {}) {
     "video=true", "audio=false", "control=false",
     "tunnel_forward=true",
     "raw_stream=true",
-    `max_size=${q.width ?? 540}`, `video_codec=${q.codec ?? "h264"}`,
+    `max_size=${q.width ?? 540}`, `video_codec=${q.codec ?? "h265"}`,
     `video_bit_rate=${bitrateToInt(q.bitrate ?? "4M")}`, `max_fps=${q.fps ?? 60}`,
+    ...(q.showTouches ? ["show_touches=true"] : []),
+    ...(q.stayAwake ? ["stay_awake=true"] : []),
+    ...(q.powerOffOnClose ? ["power_off_on_close=true"] : []),
     "log_level=warn",
   ];
   const cmd = `CLASSPATH=${jarRemote} app_process / com.genymobile.scrcpy.Server ${args.join(" ")}`;
