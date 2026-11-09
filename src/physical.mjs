@@ -82,10 +82,12 @@ export async function startPhysicalDevice(device) {
   const size = m ? { width: Number(m[1]), height: Number(m[2]) } : { width: 1080, height: 2220 };
   const abort = new AbortController();
   const { port, close } = await startStream(serial);
-  // Native input over scrcpy's control channel; fall back to adb shell input
-  // when the control server can't start (set REX_SIM_INPUT=adb to force it).
-  let input;
-  if (process.env.REX_SIM_INPUT !== "adb") {
+  // adb shell input is the reliable default; the scrcpy control channel is
+  // opt-in via REX_SIM_INPUT=control. Some OEMs (vivo/OriginOS) block the
+  // injected input until 'USB debugging (Security settings)' is enabled in
+  // developer options.
+  let input = new AdbInput(serial, size);
+  if (process.env.REX_SIM_INPUT === "control") {
     try {
       const { socket, close: closeControl } = await startControlSocket(serial);
       input = new ScrcpyInput(socket, size);
@@ -94,7 +96,6 @@ export async function startPhysicalDevice(device) {
       console.error(`scrcpy control unavailable (${e.message}); using adb input`);
     }
   }
-  input ??= new AdbInput(serial, size);
   return {
     device,
     frames: multipartFrames(`http://127.0.0.1:${port}/stream`, abort.signal),
