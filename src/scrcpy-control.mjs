@@ -154,28 +154,71 @@ export const CONSUMER = { home: 0x40, volumeUp: 0xE9, volumeDown: 0xEA };
 function serverJarPath() {
   const env = process.env.REX_SIM_SCRCPY_SERVER;
   if (env && existsSync(env)) return env;
+  const cmd = process.env.REX_SIM_SCRCPY || "scrcpy";
   const candidates = ["/opt/homebrew/share/scrcpy/scrcpy-server", "/usr/local/share/scrcpy/scrcpy-server"];
-  const which = spawnSync("sh", ["-c", "command -v scrcpy"]).stdout.toString().trim();
+  const which = spawnSync("sh", ["-c", `command -v "${cmd}"`]).stdout.toString().trim();
   if (which) candidates.unshift(`${dirname(which)}/../share/scrcpy/scrcpy-server`);
   return candidates.find(existsSync) ?? null;
 }
 
 function scrcpyVersion() {
-  const out = spawnSync("scrcpy", ["--version"]).stdout.toString();
+  const cmd = process.env.REX_SIM_SCRCPY || "scrcpy";
+  const out = spawnSync(cmd, ["--version"]).stdout.toString();
   return /scrcpy (\S+)/.exec(out)?.[1] ?? null;
 }
 
-function connectWithRetry(port, timeoutMs) {
+// Dial the forwarded endpoint until the scrcpy server has actually spoken: a
+// local TCP connect (adb forward) only proves adb's endpoint exists, not that
+// the on-device server is ready. The server sends one dummy byte when
+// send_dummy_byte=true; we consume exactly that byte (read(1), leaving the
+// rest buffered and the socket paused) and resolve. Attempts that close or
+// error before the dummy byte are retried, with one retry per failed attempt
+// and an overall deadline including accepted-but-silent connections.
+export function connectWithRetry(port, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const attempt = () => {
+      if (Date.now() >= deadline) {
+        reject(new Error(`scrcpy control socket didn't accept a connection`));
+        return;
+      }
       const socket = net.connect(port, "127.0.0.1");
-      socket.once("connect", () => resolve(socket));
-      socket.once("error", () => {
+      let finished = false;
+      const idleTimer = setTimeout(() => fall(), Math.max(0, deadline - Date.now()));
+      // Only our named handshake listeners are removed on settle; the
+      // socket's own internal listeners (notably end handling) stay intact.
+      const detach = () => {
+        clearTimeout(idleTimer);
+        socket.off("error", onError);
+        socket.off("close", onClose);
+        socket.off("readable", onReadable);
+      };
+      const fall = () => {
+        if (finished) return;
+        finished = true;
+        detach();
         socket.destroy();
-        if (Date.now() > deadline) reject(new Error(`scrcpy control socket didn't accept a connection`));
-        else setTimeout(attempt, 250);
-      });
+        setTimeout(attempt, 250); // exactly one retry per failed attempt
+      };
+      const succeed = () => {
+        if (finished) return;
+        finished = true;
+        detach();
+        resolve(socket);
+      };
+      const onError = () => fall();
+      const onClose = () => fall();
+      const onReadable = () => {
+        const dummy = socket.read(1);
+        if (dummy && dummy.length === 1) {
+          if (dummy[0] === 0) succeed(); // the documented handshake byte
+          else fall(); // malformed dummy: fail this attempt, retry
+        }
+        // else keep waiting: more data or a close will follow
+      };
+      socket.once("error", onError);
+      socket.once("close", onClose);
+      socket.once("readable", onReadable);
     };
     attempt();
   });
@@ -196,7 +239,7 @@ const bitrateToInt = (v) => {
 // its socket, and resolves with a connected net.Socket carrying the raw
 // codec bitstream (Annex B). This is what the client normally decodes; we
 // hand it straight to ffmpeg, skipping any container.
-export async function startVideoSocket(serial, q = {}) {
+export async function startVideoSocket(serial, q = {}, opts = {}) {
   const jar = serverJarPath();
   if (!jar) throw new Error("couldn't find scrcpy-server.jar (set REX_SIM_SCRCPY_SERVER)");
   const version = scrcpyVersion();
@@ -211,6 +254,7 @@ export async function startVideoSocket(serial, q = {}) {
     "video=true", "audio=false", "control=false",
     "tunnel_forward=true",
     "raw_stream=true",
+    "send_dummy_byte=true", // after raw_stream; re-enables the handshake byte
     `max_size=${q.width ?? 540}`, `video_codec=${q.codec ?? "h265"}`,
     `video_bit_rate=${bitrateToInt(q.bitrate ?? "4M")}`, `max_fps=${q.fps ?? 60}`,
     ...(q.showTouches ? ["show_touches=true"] : []),
@@ -221,18 +265,64 @@ export async function startVideoSocket(serial, q = {}) {
   const cmd = `CLASSPATH=${jarRemote} app_process / com.genymobile.scrcpy.Server ${args.join(" ")}`;
   if (process.env.REX_SIM_DEBUG_CMD) console.error("video server:", cmd);
   const server = spawn(ADB, ["-s", serial, "shell", cmd], { stdio: "ignore" });
-  await new Promise((r) => setTimeout(r, 300)); // let the server bind before dialing
-  const { stdout } = await run(ADB, ["-s", serial, "forward", "tcp:0", `localabstract:${socketName}`]);
-  const port = Number(stdout.trim());
-  const socket = await connectWithRetry(port, 15000);
+  let port = null;
+  let socket = null;
+  // Registered before any stage that can fail: forward failure, connect
+  // timeout, or the server process erroring. On failure the spawned server
+  // and the adb forward are torn down so nothing is orphaned. The forward
+  // removal is intentionally outside the `cleaned` guard: cleanup may run
+  // before the forward assigned a port (e.g. a spawn error), and the port
+  // must still be removed if it is assigned later.
+  let cleaned = false;
+  let forwardRemoved = false;
+  let removingForward = null;
+  // Remove this session's adb forward. Success is recorded only when adb
+  // confirms it; a transient failure keeps the mapping so close() can retry.
+  // Concurrent removals share one in-flight attempt (no double-remove), and a
+  // removed/resolved port is never touched again.
+  const removeForward = () => {
+    if (forwardRemoved || port == null) return Promise.resolve();
+    if (removingForward) return removingForward;
+    removingForward = run(ADB, ["-s", serial, "forward", "--remove", `tcp:${port}`])
+      .then(() => { forwardRemoved = true; })
+      .catch(() => {}) // keep the mapping for a later retry
+      .finally(() => { removingForward = null; });
+    return removingForward;
+  };
+  const cleanupStartup = () => {
+    if (!cleaned) {
+      cleaned = true;
+      try { socket?.destroy(); } catch {}
+      if (server.exitCode == null) {
+        server.kill("SIGTERM");
+        setTimeout(() => { if (server.exitCode == null) server.kill("SIGKILL"); }, 2000).unref();
+      }
+      // Also kill the remote server by its unique jar name, so no orphaned
+      // on-device server outlives the pane.
+      run(ADB, ["-s", serial, "shell", `pkill -f ${jarRemote}`]).catch(() => {});
+    }
+    removeForward();
+  };
+  server.on("error", () => cleanupStartup());
+  try {
+    const { stdout } = await run(ADB, ["-s", serial, "forward", "tcp:0", `localabstract:${socketName}`]);
+    port = Number(stdout.trim());
+    socket = await connectWithRetry(port, opts.connectTimeoutMs ?? 15000);
+    // The tunnel is established. scrcpy's own server removes its forwarding
+    // once the client connects; do the same now (awaiting success, but with a
+    // retry available at close if adb is transiently unavailable), so a crash
+    // mid-stream does not leave a listening adb forward behind.
+    await removeForward();
+  } catch (e) {
+    cleanupStartup();
+    throw e;
+  }
+  let closed = false;
   const close = () => {
+    if (closed) return;
+    closed = true;
     try { socket.destroy(); } catch {}
-    server.kill("SIGTERM");
-    setTimeout(() => { if (server.exitCode == null) server.kill("SIGKILL"); }, 2000).unref();
-    // Also kill the remote server by its unique jar name, so no orphaned
-    // on-device server outlives the pane.
-    run(ADB, ["-s", serial, "shell", `pkill -f ${jarRemote}`]).catch(() => {});
-    run(ADB, ["-s", serial, "forward", "--remove", `tcp:${port}`]).catch(() => {});
+    cleanupStartup();
   };
   return { socket, close };
 }
@@ -257,19 +347,54 @@ export async function startControlSocket(serial) {
     `scid=${scid.toString(16)}`, // the server reads scid in base 16
     "video=false", "audio=false", "control=true",
     "tunnel_forward=true",
-    "send_device_meta=false", "send_dummy_byte=false",
+    "send_device_meta=false", "send_dummy_byte=true",
     "log_level=error",
   ];
   const server = spawn(ADB, ["-s", serial, "shell", `CLASSPATH=${jarRemote} app_process / com.genymobile.scrcpy.Server ${args.join(" ")}`], { stdio: "ignore" });
-  const { stdout } = await run(ADB, ["-s", serial, "forward", "tcp:0", `localabstract:${socketName}`]);
-  const port = Number(stdout.trim());
-  const socket = await connectWithRetry(port, 15000);
+  let port = null;
+  let socket = null;
+  let cleaned = false;
+  let forwardRemoved = false;
+  let removingForward = null;
+  const removeForward = () => {
+    if (forwardRemoved || port == null) return Promise.resolve();
+    if (removingForward) return removingForward;
+    removingForward = run(ADB, ["-s", serial, "forward", "--remove", `tcp:${port}`])
+      .then(() => { forwardRemoved = true; })
+      .catch(() => {})
+      .finally(() => { removingForward = null; });
+    return removingForward;
+  };
+  const cleanupStartup = () => {
+    if (!cleaned) {
+      cleaned = true;
+      try { socket?.destroy(); } catch {}
+      if (server.exitCode == null) {
+        server.kill("SIGTERM");
+        setTimeout(() => { if (server.exitCode == null) server.kill("SIGKILL"); }, 2000).unref();
+      }
+      run(ADB, ["-s", serial, "shell", `pkill -f ${jarRemote}`]).catch(() => {});
+    }
+    removeForward();
+  };
+  server.on("error", () => cleanupStartup());
+  try {
+    const { stdout } = await run(ADB, ["-s", serial, "forward", "tcp:0", `localabstract:${socketName}`]);
+    port = Number(stdout.trim());
+    socket = await connectWithRetry(port, 15000);
+    // The control tunnel is established; remove this session's own forward now
+    // (awaiting success, retry at close), so crashes don't leak it.
+    await removeForward();
+  } catch (e) {
+    cleanupStartup();
+    throw e;
+  }
+  let closed = false;
   const close = () => {
+    if (closed) return;
+    closed = true;
     try { socket.destroy(); } catch {}
-    server.kill("SIGTERM");
-    setTimeout(() => { if (server.exitCode == null) server.kill("SIGKILL"); }, 2000).unref();
-    run(ADB, ["-s", serial, "shell", `pkill -f ${jarRemote}`]).catch(() => {});
-    run(ADB, ["-s", serial, "forward", "--remove", `tcp:${port}`]).catch(() => {});
+    cleanupStartup();
   };
   return { socket, close };
 }

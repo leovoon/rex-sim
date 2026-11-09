@@ -36,7 +36,7 @@ Physical-device stream quality is tunable with environment variables (set them b
 | `REX_SIM_CODEC` | `h265` | Capture codec: `h265` (HEVC, smaller on wifi) or `h264`. |
 | `REX_SIM_SHOW_TOUCHES` | `0` | `1` shows touch feedback on the device. |
 | `REX_SIM_STAY_AWAKE` | `0` | `1` keeps the device awake while streaming. |
-| `REX_SIM_AUDIO` | `0` | `1` forwards device audio to the host speakers (uses the mkv pipeline). |
+| `REX_SIM_AUDIO` | `0` | `1` plays device audio via scrcpy's native playback. Audio is routed through the mkv pipeline (the raw video socket is video-only), so enabling audio switches the stream to that pipeline. |
 | `REX_SIM_AUDIO_SOURCE` | `output` | Audio source: `output`, `playback`, `mic`, `mic-unprocessed`, `voice-call`, etc. |
 | `REX_SIM_AUDIO_CODEC` | `opus` | Audio codec: `opus`, `aac`, `flac` (`raw` unsupported). |
 | `REX_SIM_POWER_OFF_ON_CLOSE` | `0` | `1` turns the screen off when the pane closes. |
@@ -112,7 +112,12 @@ rex-sim sends nothing over the internet itself.
 
 - For iOS it runs Xcode's simulator tools and [serve-sim](https://github.com/EvanBacon/serve-sim) 0.1.49 through `npx`, which downloads from npm the first time. serve-sim keeps running after the pane closes.
 - For Android emulators it runs `adb` and the emulator from your Android SDK, plus a small helper that comes with rex-sim. The helper stops a few seconds after the last pane showing that emulator closes.
-- For a real Android device it runs `scrcpy` headless (`--no-playback --no-window`), recording into a pipe as Matroska, and `ffmpeg` turns that into the frame stream. Input goes through `adb shell input`, like the emulator path. The phone's screen wakes when the stream opens; if it's locked, you'll see the lock screen.
+- For a real Android device it runs `scrcpy` headless (`--no-window --no-video-playback`), recording into a pipe as Matroska, and `ffmpeg` turns that into the frame stream. Input goes through `adb shell input`, like the emulator path. The phone's screen wakes when the stream opens; if it's locked, you'll see the lock screen. When `REX_SIM_AUDIO=1`, scrcpy's own playback plays the device audio on the host while the same session records video; audio is carried by the mkv pipeline, and the raw video socket stays the default video-only path.
+- **One phone, many transports.** The same physical device reachable over USB and wireless (mDNS/TCP) is listed once, grouped by the device's hardware serial; the other transports stay as aliases, so saved choices and `--device` ids keep resolving.
+- **Rotation.** Rotate uses scrcpy's native rotation through the control channel; if that channel is unavailable it falls back to `adb` rotation. Rotation may be refused by portrait-only apps or the lockscreen, and is not forced through global policies.
+- **Pixel aspect.** Video rotation is carried as non-square pixels (JFIF density ratio); the pane lays out and resizes to the display aspect, so landscape frames are not shown squeezed in a portrait rect.
+- **Ports.** The mkv pipeline picks a free loopback port and passes a bounded retry range to scrcpy instead of contending for the shared default port (27183). The raw path uses `adb forward tcp:0` and removes its own forward as soon as the tunnel is established.
+- **Wake on focus.** Focusing the Rex pane that streams a physical Android phone wakes the phone's screen (adb `KEYCODE_WAKEUP`; it does not reconnect or unlock). Leaving the pane does nothing, and the phone is not kept awake while the pane sits focused — a locked phone stays locked until you come back to the pane. Outside a Rex session (e.g. `node bin/rex-sim.mjs` in a plain terminal) the feature is off.
 - It shrinks each frame to the pane with [sharp](https://sharp.pixelplumbing.com) and hands it to Rex as a file in `/tmp`, which Rex reads and deletes.
 
 ## Limits

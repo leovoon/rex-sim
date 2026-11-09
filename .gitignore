@@ -1,2 +1,9 @@
 node_modules/
 .DS_Store
+
+# Local environment and runtime artifacts
+.env
+.env.*
+!.env.example
+*.log
+*.pid

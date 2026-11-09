@@ -12,6 +12,11 @@ export const PLATFORMS = [
 
 export const platformOf = (device) => PLATFORMS.find((p) => p.id === device.platform);
 
+// A logical device id resolves through its selected transport id, its serial,
+// and any aliases (the other transports of the same physical device).
+export const deviceMatchesId = (device, id) =>
+  device.id === id || device.serial === id || (device.aliases?.includes(id) ?? false);
+
 export const canRepair = (device) => Boolean(device?.booted && platformOf(device).repair);
 
 // Every device a platform can list; a platform whose tools are missing lists none.

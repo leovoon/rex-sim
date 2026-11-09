@@ -106,21 +106,25 @@ export class AdbInput {
 // written to its stdin instead of spawning a fresh adb process per event. This
 // cuts per-event latency by roughly half (and more over wireless).
 export class AdbStreamInput {
-  constructor(serial, size) {
+  constructor(serial, size, spawnFn = spawn) {
     this.serial = serial;
     this.size = size;
+    this.spawn = spawnFn;
     this.proc = null;
     this.queue = Promise.resolve();
     this.move = null;
     this.wheel = null;
     this.held = new Set();
+    this.closed = false;
     this.start();
   }
 
   start() {
-    this.proc = spawn(ADB, ["-s", this.serial, "shell"], { stdio: ["pipe", "ignore", "pipe"] });
+    if (this.closed) return;
+    this.proc = this.spawn(ADB, ["-s", this.serial, "shell"], { stdio: ["pipe", "ignore", "pipe"] });
     const proc = this.proc;
     proc.on("error", () => {});
+    proc.stdin.on("error", () => {}); // EPIPE if the shell dies mid-write
     proc.stderr.on("data", () => {});
     proc.on("exit", () => {
       if (this.proc === proc) this.proc = null;
@@ -129,19 +133,28 @@ export class AdbStreamInput {
 
   // Commands run one at a time, in order; a dead shell is respawned. A
   // function command is called at execution time (for coalesced moves/wheels).
+  // Once closed, queued commands no-op: close must be final.
   run(command) {
     this.queue = this.queue.then(() => new Promise((resolve) => {
+      if (this.closed) return resolve();
       const line = typeof command === "function" ? command() : command;
       if (!line) return resolve();
       if (!this.proc) this.start();
+      if (!this.proc) return resolve(); // closed raced between queue and here
       this.proc.stdin.write(line + "\n", () => resolve());
     })).catch(() => {});
     return this.queue;
   }
 
   // Drop the long-lived shell; called when the stream session closes, so a
-  // fresh adb shell doesn't pile up on every stream restart.
+  // fresh adb shell doesn't pile up on every stream restart. Idempotent and
+  // permanent: no queued command may respawn the shell.
   close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.move = null;
+    this.wheel = null;
+    this.held.clear();
     const proc = this.proc;
     this.proc = null;
     if (proc && proc.exitCode == null) {

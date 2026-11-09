@@ -1,9 +1,10 @@
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import sharp from "sharp";
-import { canRepair, listDevices, platformOf } from "./devices.mjs";
-import { imageSize } from "./frames.mjs";
+import { canRepair, deviceMatchesId, listDevices, platformOf } from "./devices.mjs";
+import { imageDisplaySize, imageSize } from "./frames.mjs";
 import { keyUsage } from "./keys.mjs";
+import { createFocusWake } from "./rex-focus.mjs";
 import { enter, leave, requestMetrics, InputParser, Screen } from "./terminal.mjs";
 import { firstCursor, fraction, hit, layout, moveCursor, pickerEntries, render } from "./view.mjs";
 
@@ -19,40 +20,22 @@ const WHEEL_STEP = 0.03;
 const CORNER = 0.13;
 
 // Stream settings, reachable with `q` while streaming. Each row cycles
-// through its values on the matching digit; choosing sets the REX_SIM_*
+// through its values on the matching digit; applying writes the REX_SIM_*
 // environment variables (which the physical stream reads on every session
-// start) and restarts the stream.
-const SETTING_ROWS = [
-  {
-    key: "1", label: "presets", current: 1, values: [
-      { label: "smooth 360", env: { REX_SIM_WIDTH: "360", REX_SIM_FPS: "60", REX_SIM_BITRATE: "3M", REX_SIM_JPEG_Q: "6" } },
-      { label: "balanced 540", env: { REX_SIM_WIDTH: "540", REX_SIM_FPS: "60", REX_SIM_BITRATE: "4M", REX_SIM_JPEG_Q: "4" } },
-      { label: "sharp 720", env: { REX_SIM_WIDTH: "720", REX_SIM_FPS: "60", REX_SIM_BITRATE: "8M", REX_SIM_JPEG_Q: "3" } },
-      { label: "max 1080", env: { REX_SIM_WIDTH: "1080", REX_SIM_FPS: "30", REX_SIM_BITRATE: "10M", REX_SIM_JPEG_Q: "2" } },
-      { label: "hevc 540", env: { REX_SIM_WIDTH: "540", REX_SIM_FPS: "60", REX_SIM_BITRATE: "4M", REX_SIM_JPEG_Q: "4", REX_SIM_CODEC: "h265" } },
-    ],
-  },
-  { key: "2", label: "codec", current: 1, values: [
-    { label: "h264", env: { REX_SIM_CODEC: "h264" } },
-    { label: "h265", env: { REX_SIM_CODEC: "h265" } },
-  ] },
-  { key: "3", label: "width", current: 1, values: [360, 540, 720, 1080].map((w) => ({ label: String(w), env: { REX_SIM_WIDTH: String(w) } })) },
-  { key: "4", label: "fps", current: 3, values: [15, 30, 60, 90].map((f) => ({ label: String(f), env: { REX_SIM_FPS: String(f) } })) },
-  { key: "5", label: "bitrate", current: 1, values: ["2M", "4M", "8M", "12M"].map((b) => ({ label: b, env: { REX_SIM_BITRATE: b } })) },
-  { key: "6", label: "jpeg q", current: 1, values: [8, 6, 4, 2].map((q) => ({ label: String(q), env: { REX_SIM_JPEG_Q: String(q) } })) },
-  { key: "7", label: "show-touches", current: 0, values: [
-    { label: "off", env: { REX_SIM_SHOW_TOUCHES: "0" } },
-    { label: "on", env: { REX_SIM_SHOW_TOUCHES: "1" } },
-  ] },
-  { key: "8", label: "stay-awake", current: 0, values: [
-    { label: "off", env: { REX_SIM_STAY_AWAKE: "0" } },
-    { label: "on", env: { REX_SIM_STAY_AWAKE: "1" } },
-  ] },
-  { key: "9", label: "audio", current: 0, values: [
-    { label: "off", env: { REX_SIM_AUDIO: "0" } },
-    { label: "on", env: { REX_SIM_AUDIO: "1" } },
-  ] },
-];
+// start) and restarts the stream once. The menu's displayed values always
+// come from the effective environment (src/settings.mjs), never from a
+// stale constant.
+import { SettingsMenu } from "./settings.mjs";
+
+// One restart for the staged changes that actually change the effective
+// environment: Enter with no effective change returns to the live session
+// without closing or restarting it. The app's handler uses this; it is
+// exported as the integration seam for tests.
+export function menuApply(menu, { onChanged, onUnchanged }) {
+  const changed = menu.apply();
+  if (changed) onChanged();
+  else onUnchanged();
+}
 
 const clamp = (p) => ({ x: Math.min(1, Math.max(0, p.x)), y: Math.min(1, Math.max(0, p.y)) });
 const mix = (a, b, t) => a.map((v, i) => Math.round(v * t + b[i] * (1 - t)));
@@ -108,8 +91,24 @@ export async function run({ device: deviceArg }) {
   let wakeLoop = null;
   let wakeDraw = null;
 
+  // Wake the physical phone when this Rex pane regains focus (see
+  // src/rex-focus.mjs). No-op outside a Rex session (REX_SESSION/REX_BLOCK
+  // unset); disposed on quit.
+  const focusWake = createFocusWake({
+    getSession: () => activeSession,
+    isPaused: () => paused,
+    isQuitting: () => quitting,
+    onError: () => {
+      if (!notice) {
+        notice = "rex focus unavailable";
+        redraw();
+      }
+    },
+  });
+  focusWake.focus?.start();
+
   // This pane's device: the one picked here or passed in, else the first running one.
-  const target = () => devices.find((d) => d.id === choice) ?? devices.find((d) => d.booted) ?? null;
+  const target = () => devices.find((d) => deviceMatchesId(d, choice)) ?? devices.find((d) => d.booted) ?? null;
   const input = () => (view.kind === "streaming" ? view.session.input : null);
   const stopActive = () => {
     activeSession?.close();
@@ -176,19 +175,18 @@ export async function run({ device: deviceArg }) {
     nudge();
   }
 
-  const currentOf = (row) => row.values[settingsMenu.pending.get(row) ?? row.current];
   const settingsText = () => [
     "stream settings (enter apply · esc discard)",
-    ...SETTING_ROWS.map((r, i) => {
-      const changed = settingsMenu.pending.has(r);
+    ...settingsMenu.rows().map((r, i) => {
+      const changed = settingsMenu.changed(r);
       const cursor = i === settingsMenu.cursor ? ">" : " ";
-      return `${cursor} ${changed ? "*" : " "}${r.key} ${r.label} · ${currentOf(r).label}`;
+      return `${cursor} ${changed ? "*" : " "}${r.key} ${r.label} · ${settingsMenu.labelOf(r)}`;
     }),
   ].join("\n");
 
   function openQuality() {
     if (view.kind !== "streaming" || settingsMenu) return;
-    settingsMenu = { cursor: 0, pending: new Map() };
+    settingsMenu = new SettingsMenu(process.env);
     activeSession = view.session;
     show({ kind: "settings", text: settingsText() });
   }
@@ -196,8 +194,8 @@ export async function run({ device: deviceArg }) {
   function closeQuality() {
     if (!settingsMenu) return;
     settingsMenu = null;
+    // Keep the live session referenced: closing the menu does not detach it.
     const session = activeSession;
-    activeSession = null;
     if (!session) {
       nudge();
       return;
@@ -205,23 +203,36 @@ export async function run({ device: deviceArg }) {
     show({ kind: "streaming", session });
   }
 
-  // One restart for all staged changes.
+  // Apply the staged changes that actually change the effective environment.
+  // Enter with no effective change just returns to the live session without
+  // closing or restarting it.
   function applySettings() {
     if (!settingsMenu) return;
-    for (const [row, index] of settingsMenu.pending) {
-      for (const [name, value] of Object.entries(row.values[index].env)) process.env[name] = value;
-    }
-    settingsMenu = null;
-    stopActive();
-    show({ kind: "message", text: "applying stream settings…" });
-    nudge();
+    menuApply(settingsMenu, {
+      onUnchanged: () => {
+        settingsMenu = null;
+        const session = activeSession;
+        if (session) show({ kind: "streaming", session });
+        else nudge();
+      },
+      onChanged: () => {
+        settingsMenu = null;
+        stopActive();
+        show({ kind: "message", text: "applying stream settings…" });
+        nudge();
+      },
+    });
   }
 
-  function cycleRow(row, delta) {
-    const len = row.values.length;
-    const current = settingsMenu.pending.get(row) ?? row.current;
-    settingsMenu.pending.set(row, (current + delta + len) % len);
+  function cycleRow(delta) {
+    settingsMenu.cycle(delta);
     show({ kind: "settings", text: settingsText() });
+  }
+
+  function selectRow(key) {
+    if (!settingsMenu.select(key)) return false;
+    show({ kind: "settings", text: settingsText() });
+    return true;
   }
 
   async function openPicker() {
@@ -247,7 +258,7 @@ export async function run({ device: deviceArg }) {
     devices: () => openPicker(),
     device: async (id) => {
       devices = await listDevices();
-      const d = devices.find((d) => d.id === id);
+      const d = devices.find((d) => deviceMatchesId(d, id));
       if (!d) show({ kind: "error", text: `No device with id ${id}.` });
       else if (d.unusable) show({ kind: "error", text: `${d.name}: ${d.unusable}.` });
       else pick(d);
@@ -313,21 +324,16 @@ export async function run({ device: deviceArg }) {
       if (key === "\x1b") return closeQuality();
       if (key === "\r") return applySettings();
       if (key === "up" || key === "k") {
-        settingsMenu.cursor = Math.max(0, settingsMenu.cursor - 1);
+        settingsMenu.moveCursor(-1);
         return show({ kind: "settings", text: settingsText() });
       }
       if (key === "down" || key === "j") {
-        settingsMenu.cursor = Math.min(SETTING_ROWS.length - 1, settingsMenu.cursor + 1);
+        settingsMenu.moveCursor(1);
         return show({ kind: "settings", text: settingsText() });
       }
-      if (key === "left" || key === "h") return cycleRow(SETTING_ROWS[settingsMenu.cursor], -1);
-      if (key === "right" || key === "l" || key === " ") return cycleRow(SETTING_ROWS[settingsMenu.cursor], 1);
-      const row = SETTING_ROWS.find((r) => r.key === key);
-      if (row) {
-        settingsMenu.cursor = SETTING_ROWS.indexOf(row);
-        return show({ kind: "settings", text: settingsText() });
-      }
-      return;
+      if (key === "left" || key === "h") return cycleRow(-1);
+      if (key === "right" || key === "l" || key === " ") return cycleRow(1);
+      return selectRow(key);
     }
     if (key === "\x10") return openPicker();
     if (key === "q") return openQuality();
@@ -373,6 +379,7 @@ export async function run({ device: deviceArg }) {
   async function quit() {
     if (quitting) return;
     quitting = true;
+    focusWake.close();
     stopStream();
     leave();
     const prefix = `tty-graphics-protocol-rex-sim-${process.pid}-`;
@@ -393,7 +400,7 @@ export async function run({ device: deviceArg }) {
       const { session, bytes } = latest;
       latest = null;
       if (view.session !== session || picker || paused || !metrics) continue;
-      const size = imageSize(bytes);
+      const size = imageDisplaySize(bytes) ?? imageSize(bytes);
       if (!size) continue;
       if (size.width !== frameSize?.width || size.height !== frameSize?.height) {
         frameSize = size;
