@@ -208,10 +208,12 @@ async function startStream(serial) {
   ]);
   const ffmpeg = spawn(FFMPEG, [
     "-loglevel", "error", "-nostdin",
-    "-fflags", "nobuffer", "-flags", "low_delay", "-analyzeduration", "0", "-probesize", "4096",
+    // -fflags nobuffer starves the matroska-over-fifo demuxer; keep the
+    // other low-latency flags instead.
+    "-flags", "low_delay", "-analyzeduration", "0", "-probesize", "32768",
     "-f", "matroska", "-i", fifo,
     "-an", "-sn",
-    "-c:v", "mjpeg", "-q:v", "4", "-pix_fmt", "yuvj420p",
+    "-c:v", "mjpeg", "-q:v", "4",
     "-f", "image2pipe", "-",
   ], { stdio: ["ignore", "pipe", "inherit"] });
 
