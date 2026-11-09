@@ -25,13 +25,13 @@ const IDLE_MS = 3000;
 //   REX_SIM_BITRATE    scrcpy video bit-rate (default 4M)
 //   REX_SIM_FPS        maximum capture frame rate (10-120, default 60)
 //   REX_SIM_JPEG_Q     ffmpeg MJPEG quality, 1 best - 31 worst (default 4)
-//   REX_SIM_CODEC      h264 (default) or h265 (HEVC, smaller on wifi)
+//   REX_SIM_CODEC      h265 (default, smaller on wifi) or h264
 const clampInt = (v, fallback, [min, max]) => {
   const n = Number(v);
   return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
 };
 export function qualityConfig(env = process.env) {
-  const codec = env.REX_SIM_CODEC === "h265" || env.REX_SIM_CODEC === "hevc" ? "h265" : "h264";
+  const codec = env.REX_SIM_CODEC === "h264" ? "h264" : "h265";
   return {
     width: clampInt(env.REX_SIM_WIDTH, 540, [240, 1080]),
     bitrate: env.REX_SIM_BITRATE || "4M",

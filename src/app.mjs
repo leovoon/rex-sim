@@ -26,6 +26,7 @@ const QUALITIES = [
   { key: "2", label: "balanced 540", env: { REX_SIM_WIDTH: "540", REX_SIM_FPS: "60", REX_SIM_BITRATE: "4M", REX_SIM_JPEG_Q: "4" } },
   { key: "3", label: "sharp 720", env: { REX_SIM_WIDTH: "720", REX_SIM_FPS: "60", REX_SIM_BITRATE: "8M", REX_SIM_JPEG_Q: "3" } },
   { key: "4", label: "max 1080", env: { REX_SIM_WIDTH: "1080", REX_SIM_FPS: "30", REX_SIM_BITRATE: "10M", REX_SIM_JPEG_Q: "2" } },
+  { key: "5", label: "hevc 540", env: { REX_SIM_WIDTH: "540", REX_SIM_FPS: "60", REX_SIM_BITRATE: "4M", REX_SIM_JPEG_Q: "4", REX_SIM_CODEC: "h265" } },
 ];
 
 const clamp = (p) => ({ x: Math.min(1, Math.max(0, p.x)), y: Math.min(1, Math.max(0, p.y)) });
