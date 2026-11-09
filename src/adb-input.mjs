@@ -11,17 +11,17 @@ export const EMULATOR = `${SDK}/emulator/emulator`;
 export const adb = (serial, args) => run(ADB, ["-s", serial, ...args]);
 
 // USB HID keyboard usages (what the key handler produces) -> Android key codes.
-const KEYCODES = {
+export const KEYCODES = {
   40: 66, 41: 111, 42: 67, 43: 61, 44: 62, 45: 69, 46: 70, 47: 71, 48: 72, 49: 73, 51: 74, 52: 75, 53: 68,
   54: 55, 55: 56, 56: 76, 74: 122, 75: 92, 76: 112, 77: 123, 78: 93, 79: 22, 80: 21, 81: 20, 82: 19,
 };
 for (let u = 4; u <= 29; u++) KEYCODES[u] = u + 25;
 for (let u = 30; u <= 38; u++) KEYCODES[u] = u - 22;
 KEYCODES[39] = 7;
-const SHIFT = 225;
-const MODIFIERS = new Set([224, 225, 226, 227]);
-const BUTTONS = { home: 3, lock: 26 };
-const VOLUME = { up: 24, down: 25 };
+export const SHIFT = 225;
+export const MODIFIERS = new Set([224, 225, 226, 227]);
+export const BUTTONS = { home: 3, lock: 26 };
+export const VOLUME = { up: 24, down: 25 };
 const clamp01 = (v) => Math.min(1, Math.max(0, v));
 
 // The same surface as the iOS input, over `adb shell input`. Points are 0..1.

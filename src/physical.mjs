@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { ADB, adb, AdbInput } from "./adb-input.mjs";
 import { multipartFrames } from "./frames.mjs";
+import { ScrcpyInput, startControlSocket } from "./scrcpy-control.mjs";
 
 const run = promisify(execFile);
 const SCRCPY = process.env.REX_SIM_SCRCPY || "scrcpy";
@@ -81,13 +82,27 @@ export async function startPhysicalDevice(device) {
   const size = m ? { width: Number(m[1]), height: Number(m[2]) } : { width: 1080, height: 2220 };
   const abort = new AbortController();
   const { port, close } = await startStream(serial);
+  // Native input over scrcpy's control channel; fall back to adb shell input
+  // when the control server can't start (set REX_SIM_INPUT=adb to force it).
+  let input;
+  if (process.env.REX_SIM_INPUT !== "adb") {
+    try {
+      const { socket, close: closeControl } = await startControlSocket(serial);
+      input = new ScrcpyInput(socket, size);
+      input.close = closeControl;
+    } catch (e) {
+      console.error(`scrcpy control unavailable (${e.message}); using adb input`);
+    }
+  }
+  input ??= new AdbInput(serial, size);
   return {
     device,
     frames: multipartFrames(`http://127.0.0.1:${port}/stream`, abort.signal),
-    input: new AdbInput(serial, size),
+    input,
     close: () => {
       abort.abort();
       close();
+      input.close?.();
     },
   };
 }
