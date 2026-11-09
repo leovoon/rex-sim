@@ -203,11 +203,16 @@ async function startStream(serial) {
   const scrcpy = spawn(SCRCPY, [
     "--no-playback", "--no-window", "--no-audio", "--no-control",
     "--video-codec=h264", `--max-size=${STREAM_WIDTH}`,
+    "--video-bit-rate=4M", "--max-fps=60",
     `--record=${fifo}`, "--record-format=mkv", "-s", serial,
   ]);
   const ffmpeg = spawn(FFMPEG, [
-    "-loglevel", "error", "-nostdin", "-f", "matroska", "-i", fifo,
-    "-an", "-f", "image2pipe", "-vcodec", "mjpeg", "-",
+    "-loglevel", "error", "-nostdin",
+    "-fflags", "nobuffer", "-flags", "low_delay", "-analyzeduration", "0", "-probesize", "4096",
+    "-f", "matroska", "-i", fifo,
+    "-an", "-sn",
+    "-c:v", "mjpeg", "-q:v", "4", "-pix_fmt", "yuvj420p",
+    "-f", "image2pipe", "-",
   ], { stdio: ["ignore", "pipe", "inherit"] });
 
   const parser = new MjpegParser();
