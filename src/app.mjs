@@ -189,12 +189,12 @@ export async function run({ device: deviceArg }) {
     show({ kind: "settings", text: settingsText() });
   }
 
-  function closeQuality(discard) {
+  function closeQuality() {
     if (!settingsMenu) return;
     settingsMenu = null;
     const session = activeSession;
     activeSession = null;
-    if (discard || !session) {
+    if (!session) {
       nudge();
       return;
     }
@@ -306,7 +306,7 @@ export async function run({ device: deviceArg }) {
     if (key === "\x03") return quit();
     if (picker) return onPickerKey(key);
     if (settingsMenu) {
-      if (key === "\x1b") return closeQuality(true);
+      if (key === "\x1b") return closeQuality();
       if (key === "\r") return applySettings();
       if (key === "up" || key === "k") {
         settingsMenu.cursor = Math.max(0, settingsMenu.cursor - 1);
