@@ -25,11 +25,11 @@ test("no devices lists none", () => {
 });
 
 test("quality config defaults and clamps", () => {
-  assert.deepEqual(qualityConfig({}), { width: 540, bitrate: "4M", fps: 60, jpegQ: 4 });
-  assert.deepEqual(qualityConfig({ REX_SIM_WIDTH: "720", REX_SIM_BITRATE: "8M", REX_SIM_FPS: "30", REX_SIM_JPEG_Q: "2" }),
-    { width: 720, bitrate: "8M", fps: 30, jpegQ: 2 });
+  assert.deepEqual(qualityConfig({}), { width: 540, bitrate: "4M", fps: 60, jpegQ: 4, codec: "h264" });
+  assert.deepEqual(qualityConfig({ REX_SIM_WIDTH: "720", REX_SIM_BITRATE: "8M", REX_SIM_FPS: "30", REX_SIM_JPEG_Q: "2", REX_SIM_CODEC: "hevc" }),
+    { width: 720, bitrate: "8M", fps: 30, jpegQ: 2, codec: "h265" });
   assert.deepEqual(qualityConfig({ REX_SIM_WIDTH: "9999", REX_SIM_FPS: "0", REX_SIM_JPEG_Q: "99" }),
-    { width: 540, bitrate: "4M", fps: 60, jpegQ: 4 });
+    { width: 540, bitrate: "4M", fps: 60, jpegQ: 4, codec: "h264" });
 });
 
 test("mjpeg parser joins frames across arbitrary chunk boundaries", () => {
