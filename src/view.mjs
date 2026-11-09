@@ -144,7 +144,7 @@ export function render(state, geometry, actions) {
         },
       });
     }
-    hints = "ctrl-p devices · ctrl-c quit";
+    hints = "ctrl-p devices · q quality · ctrl-c quit";
   } else {
     const lines = wrap(message(view), Math.max(10, cols - 4));
     const top = Math.max(0, Math.floor((area.rows - lines.length) / 2));

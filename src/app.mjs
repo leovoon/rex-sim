@@ -18,6 +18,16 @@ const WHEEL_STEP = 0.03;
 // The screen's rounded corners, as a share of its width.
 const CORNER = 0.13;
 
+// Stream quality presets, reachable with `q` while streaming. Choosing one
+// sets the REX_SIM_* environment variables (which the physical stream reads on
+// every session start) and restarts the stream.
+const QUALITIES = [
+  { key: "1", label: "smooth 360", env: { REX_SIM_WIDTH: "360", REX_SIM_FPS: "60", REX_SIM_BITRATE: "3M", REX_SIM_JPEG_Q: "6" } },
+  { key: "2", label: "balanced 540", env: { REX_SIM_WIDTH: "540", REX_SIM_FPS: "60", REX_SIM_BITRATE: "4M", REX_SIM_JPEG_Q: "4" } },
+  { key: "3", label: "sharp 720", env: { REX_SIM_WIDTH: "720", REX_SIM_FPS: "60", REX_SIM_BITRATE: "8M", REX_SIM_JPEG_Q: "3" } },
+  { key: "4", label: "max 1080", env: { REX_SIM_WIDTH: "1080", REX_SIM_FPS: "30", REX_SIM_BITRATE: "10M", REX_SIM_JPEG_Q: "2" } },
+];
+
 const clamp = (p) => ({ x: Math.min(1, Math.max(0, p.x)), y: Math.min(1, Math.max(0, p.y)) });
 const mix = (a, b, t) => a.map((v, i) => Math.round(v * t + b[i] * (1 - t)));
 
@@ -58,6 +68,8 @@ export async function run({ device: deviceArg }) {
   let paused = false;
   let repairing = null;
   let quitting = false;
+  let qualityMenu = false;
+  let streamSession = null;
   // The newest frame not yet drawn, and the last one that arrived, to draw
   // again after the picker or a resize covered the screen.
   let latest = null;
@@ -127,6 +139,33 @@ export async function run({ device: deviceArg }) {
     picker = null;
     repairing = device.id;
     stopStream();
+    nudge();
+  }
+
+  const qualityHint = () => `quality (1-4): ${QUALITIES.map((q) => `${q.key} ${q.label}`).join(" · ")} [esc]`;
+
+  function openQuality() {
+    if (view.kind !== "streaming" || qualityMenu) return;
+    qualityMenu = true;
+    streamSession = view.session;
+    show({ kind: "message", text: qualityHint() });
+  }
+
+  function closeQuality() {
+    if (!qualityMenu) return;
+    qualityMenu = false;
+    const session = streamSession;
+    streamSession = null;
+    show({ kind: "streaming", session });
+  }
+
+  function applyQuality(entry) {
+    for (const [name, value] of Object.entries(entry.env)) process.env[name] = value;
+    qualityMenu = false;
+    const session = streamSession;
+    streamSession = null;
+    session?.close();
+    show({ kind: "message", text: `${entry.label} — restarting stream…` });
     nudge();
   }
 
@@ -215,7 +254,14 @@ export async function run({ device: deviceArg }) {
   function onKey(key) {
     if (key === "\x03") return quit();
     if (picker) return onPickerKey(key);
+    if (qualityMenu) {
+      if (key === "\x1b") return closeQuality();
+      const entry = QUALITIES.find((q) => q.key === key);
+      if (entry) return applyQuality(entry);
+      return;
+    }
     if (key === "\x10") return openPicker();
+    if (key === "q") return openQuality();
     const i = input();
     const k = i && keyUsage(key);
     if (!k) return;
