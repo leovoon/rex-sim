@@ -133,16 +133,17 @@ export function render(state, geometry, actions) {
     regions.push({ x0: 0, y0: area.y, x1: area.width, y1: area.y + area.height, run: (e) => (e.action === "wheel" ? actions.moveCursor(e.dy) : e.action === "press" && actions.togglePicker()) });
     hints = "↑↓ move · enter pick · esc close";
   } else if (view.kind === "settings") {
-    // One line per setting, never re-wrapped; digits cycle, esc closes.
+    // One line per setting, never re-wrapped; the cursor row shows selected.
     const lines = view.text.split("\n").slice(0, area.rows);
     const top = Math.max(0, Math.floor((area.rows - lines.length) / 2));
     rows = Array.from({ length: Math.min(area.rows, top + lines.length) }, (_, i) => {
       const t = lines[i - top];
       if (!t) return "";
+      const selected = i > top && t.startsWith(">");
       const pad = " ".repeat(Math.max(0, Math.floor((cols - t.length) / 2)));
-      return line([[pad], [t, i === top ? "" : "dim"]], cols);
+      return line([[pad], [t, i === top ? "" : selected ? state.selection ?? "reverse" : "dim"]], cols);
     });
-    hints = "digits cycle · esc close";
+    hints = "↑↓ move · ←→ cycle · enter apply · esc discard";
   } else if (streaming) {
     const screen = geometry.screen;
     if (screen) {

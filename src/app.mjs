@@ -90,9 +90,11 @@ export async function run({ device: deviceArg }) {
   let paused = false;
   let repairing = null;
   let quitting = false;
-  let qualityMenu = false;
   // The streaming session, kept even while the settings menu hides the view.
   let activeSession = null;
+  // The settings menu is staged: rows are edited with a cursor and only
+  // applied (one stream restart) on Enter; Esc discards.
+  let settingsMenu = null;
   // The newest frame not yet drawn, and the last one that arrived, to draw
   // again after the picker or a resize covered the screen.
   let latest = null;
@@ -170,33 +172,52 @@ export async function run({ device: deviceArg }) {
     nudge();
   }
 
-  const settingsText = () => ["stream settings (esc close)", ...SETTING_ROWS.map((r) => ` ${r.key} ${r.label} · ${r.values[r.current].label}`)].join("\n");
+  const currentOf = (row) => row.values[settingsMenu.pending.get(row) ?? row.current];
+  const settingsText = () => [
+    "stream settings (enter apply · esc discard)",
+    ...SETTING_ROWS.map((r, i) => {
+      const changed = settingsMenu.pending.has(r);
+      const cursor = i === settingsMenu.cursor ? ">" : " ";
+      return `${cursor} ${changed ? "*" : " "}${r.key} ${r.label} · ${currentOf(r).label}`;
+    }),
+  ].join("\n");
 
   function openQuality() {
-    if (view.kind !== "streaming" || qualityMenu) return;
-    qualityMenu = true;
+    if (view.kind !== "streaming" || settingsMenu) return;
+    settingsMenu = { cursor: 0, pending: new Map() };
     activeSession = view.session;
     show({ kind: "settings", text: settingsText() });
   }
 
-  function closeQuality() {
-    if (!qualityMenu) return;
-    qualityMenu = false;
+  function closeQuality(discard) {
+    if (!settingsMenu) return;
+    settingsMenu = null;
     const session = activeSession;
     activeSession = null;
-    if (session) show({ kind: "streaming", session });
-    else nudge();
+    if (discard || !session) {
+      nudge();
+      return;
+    }
+    show({ kind: "streaming", session });
   }
 
-  // Cycle a setting, apply it, and restart the stream quietly behind the
-  // menu; the menu stays open so more rows can be tweaked before esc.
-  function cycleSetting(row) {
-    row.current = (row.current + 1) % row.values.length;
-    const entry = row.values[row.current];
-    for (const [name, value] of Object.entries(entry.env)) process.env[name] = value;
+  // One restart for all staged changes.
+  function applySettings() {
+    if (!settingsMenu) return;
+    for (const [row, index] of settingsMenu.pending) {
+      for (const [name, value] of Object.entries(row.values[index].env)) process.env[name] = value;
+    }
+    settingsMenu = null;
     stopActive();
-    show({ kind: "settings", text: settingsText() });
+    show({ kind: "message", text: "applying stream settings…" });
     nudge();
+  }
+
+  function cycleRow(row, delta) {
+    const len = row.values.length;
+    const current = settingsMenu.pending.get(row) ?? row.current;
+    settingsMenu.pending.set(row, (current + delta + len) % len);
+    show({ kind: "settings", text: settingsText() });
   }
 
   async function openPicker() {
@@ -284,10 +305,24 @@ export async function run({ device: deviceArg }) {
   function onKey(key) {
     if (key === "\x03") return quit();
     if (picker) return onPickerKey(key);
-    if (qualityMenu) {
-      if (key === "\x1b") return closeQuality();
+    if (settingsMenu) {
+      if (key === "\x1b") return closeQuality(true);
+      if (key === "\r") return applySettings();
+      if (key === "up" || key === "k") {
+        settingsMenu.cursor = Math.max(0, settingsMenu.cursor - 1);
+        return show({ kind: "settings", text: settingsText() });
+      }
+      if (key === "down" || key === "j") {
+        settingsMenu.cursor = Math.min(SETTING_ROWS.length - 1, settingsMenu.cursor + 1);
+        return show({ kind: "settings", text: settingsText() });
+      }
+      if (key === "left" || key === "h") return cycleRow(SETTING_ROWS[settingsMenu.cursor], -1);
+      if (key === "right" || key === "l") return cycleRow(SETTING_ROWS[settingsMenu.cursor], 1);
       const row = SETTING_ROWS.find((r) => r.key === key);
-      if (row) return cycleSetting(row);
+      if (row) {
+        settingsMenu.cursor = SETTING_ROWS.indexOf(row);
+        return show({ kind: "settings", text: settingsText() });
+      }
       return;
     }
     if (key === "\x10") return openPicker();
@@ -416,7 +451,7 @@ export async function run({ device: deviceArg }) {
           continue;
         }
         activeSession = session;
-        if (qualityMenu) show({ kind: "settings", text: settingsText() });
+        if (settingsMenu) show({ kind: "settings", text: settingsText() });
         else show({ kind: "streaming", session });
         await stream(session);
       } catch (e) {
