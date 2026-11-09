@@ -18,8 +18,25 @@ import { ScrcpyInput, startControlSocket } from "./scrcpy-control.mjs";
 const run = promisify(execFile);
 const SCRCPY = process.env.REX_SIM_SCRCPY || "scrcpy";
 const FFMPEG = process.env.REX_SIM_FFMPEG || "ffmpeg";
-const STREAM_WIDTH = 540;
 const IDLE_MS = 3000;
+
+// Quality knobs for the physical-device stream, as environment variables:
+//   REX_SIM_WIDTH       stream width in pixels (240-1080, default 540)
+//   REX_SIM_BITRATE    scrcpy video bit-rate (default 4M)
+//   REX_SIM_FPS        maximum capture frame rate (10-120, default 60)
+//   REX_SIM_JPEG_Q     ffmpeg MJPEG quality, 1 best - 31 worst (default 4)
+const clampInt = (v, fallback, [min, max]) => {
+  const n = Number(v);
+  return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
+};
+export function qualityConfig(env = process.env) {
+  return {
+    width: clampInt(env.REX_SIM_WIDTH, 540, [240, 1080]),
+    bitrate: env.REX_SIM_BITRATE || "4M",
+    fps: clampInt(env.REX_SIM_FPS, 60, [10, 120]),
+    jpegQ: clampInt(env.REX_SIM_JPEG_Q, 4, [1, 31]),
+  };
+}
 
 let toolsChecked = null;
 function toolsAvailable() {
@@ -150,6 +167,7 @@ export class MjpegParser {
 // latest frame sent to a new viewer right away.
 async function startStream(serial) {
   if (!toolsAvailable()) throw new Error("needs scrcpy and ffmpeg (brew install scrcpy ffmpeg)");
+  const q = qualityConfig();
   const fifo = `${tmpdir()}/rex-sim-${process.pid}-${serial.replace(/[^A-Za-z0-9]/g, "_")}.mkv`;
   rmSync(fifo, { force: true });
   if (spawnSync("sh", ["-c", `mkfifo "${fifo}"`]).status !== 0) {
@@ -202,8 +220,8 @@ async function startStream(serial) {
 
   const scrcpy = spawn(SCRCPY, [
     "--no-playback", "--no-window", "--no-audio", "--no-control",
-    "--video-codec=h264", `--max-size=${STREAM_WIDTH}`,
-    "--video-bit-rate=4M", "--max-fps=60",
+    "--video-codec=h264", `--max-size=${q.width}`,
+    `--video-bit-rate=${q.bitrate}`, `--max-fps=${q.fps}`,
     `--record=${fifo}`, "--record-format=mkv", "-s", serial,
   ]);
   const ffmpeg = spawn(FFMPEG, [
@@ -213,7 +231,7 @@ async function startStream(serial) {
     "-flags", "low_delay", "-analyzeduration", "0", "-probesize", "32768",
     "-f", "matroska", "-i", fifo,
     "-an", "-sn",
-    "-c:v", "mjpeg", "-q:v", "4",
+    "-c:v", "mjpeg", "-q:v", String(q.jpegQ),
     "-f", "image2pipe", "-",
   ], { stdio: ["ignore", "pipe", "inherit"] });
 

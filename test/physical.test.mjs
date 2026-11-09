@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MjpegParser, parseDevices } from "../src/physical.mjs";
+import { MjpegParser, parseDevices, qualityConfig } from "../src/physical.mjs";
 
 const jpeg = (seed) => Buffer.concat([Buffer.from([0xff, 0xd8]), Buffer.from([seed]), Buffer.from([0xff, 0xd9])]);
 
@@ -22,6 +22,14 @@ test("physical devices: emulators skipped, states surfaced", () => {
 
 test("no devices lists none", () => {
   assert.deepEqual(parseDevices("List of devices attached\n"), []);
+});
+
+test("quality config defaults and clamps", () => {
+  assert.deepEqual(qualityConfig({}), { width: 540, bitrate: "4M", fps: 60, jpegQ: 4 });
+  assert.deepEqual(qualityConfig({ REX_SIM_WIDTH: "720", REX_SIM_BITRATE: "8M", REX_SIM_FPS: "30", REX_SIM_JPEG_Q: "2" }),
+    { width: 720, bitrate: "8M", fps: 30, jpegQ: 2 });
+  assert.deepEqual(qualityConfig({ REX_SIM_WIDTH: "9999", REX_SIM_FPS: "0", REX_SIM_JPEG_Q: "99" }),
+    { width: 540, bitrate: "4M", fps: 60, jpegQ: 4 });
 });
 
 test("mjpeg parser joins frames across arbitrary chunk boundaries", () => {
