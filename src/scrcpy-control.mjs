@@ -181,6 +181,59 @@ function connectWithRetry(port, timeoutMs) {
   });
 }
 
+// The server parses video_bit_rate as a plain integer of bits per second;
+// the M suffix is a client-side convenience.
+const bitrateToInt = (v) => {
+  const m = /^(\d+)([kKmM]?)$/.exec(String(v));
+  if (!m) return 4000000;
+  const n = Number(m[1]);
+  if (m[2] === "k" || m[2] === "K") return n * 1000;
+  if (m[2] === "m" || m[2] === "M") return n * 1000000;
+  return n;
+};
+
+// Starts a video-only scrcpy server with raw stream meta disabled, forwards
+// its socket, and resolves with a connected net.Socket carrying the raw
+// codec bitstream (Annex B). This is what the client normally decodes; we
+// hand it straight to ffmpeg, skipping any container.
+export async function startVideoSocket(serial, q = {}) {
+  const jar = serverJarPath();
+  if (!jar) throw new Error("couldn't find scrcpy-server.jar (set REX_SIM_SCRCPY_SERVER)");
+  const version = scrcpyVersion();
+  if (!version) throw new Error("scrcpy not found");
+  const jarRemote = `/data/local/tmp/scrcpy-server-v-${process.pid}-${Math.floor(Math.random() * 0xffffff).toString(16)}.jar`;
+  await run(ADB, ["-s", serial, "push", jar, jarRemote]);
+  const socketName = randomSocketName();
+  const scid = Number.parseInt(socketName.slice("scrcpy_".length), 16);
+  const args = [
+    version,
+    `scid=${scid.toString(16)}`,
+    "video=true", "audio=false", "control=false",
+    "tunnel_forward=true",
+    "raw_stream=true",
+    `max_size=${q.width ?? 540}`, `video_codec=${q.codec ?? "h264"}`,
+    `video_bit_rate=${bitrateToInt(q.bitrate ?? "4M")}`, `max_fps=${q.fps ?? 60}`,
+    "log_level=warn",
+  ];
+  const cmd = `CLASSPATH=${jarRemote} app_process / com.genymobile.scrcpy.Server ${args.join(" ")}`;
+  if (process.env.REX_SIM_DEBUG_CMD) console.error("video server:", cmd);
+  const server = spawn(ADB, ["-s", serial, "shell", cmd], { stdio: "ignore" });
+  await new Promise((r) => setTimeout(r, 300)); // let the server bind before dialing
+  const { stdout } = await run(ADB, ["-s", serial, "forward", "tcp:0", `localabstract:${socketName}`]);
+  const port = Number(stdout.trim());
+  const socket = await connectWithRetry(port, 15000);
+  const close = () => {
+    try { socket.destroy(); } catch {}
+    server.kill("SIGTERM");
+    setTimeout(() => { if (server.exitCode == null) server.kill("SIGKILL"); }, 2000).unref();
+    // Also kill the remote server by its unique jar name, so no orphaned
+    // on-device server outlives the pane.
+    run(ADB, ["-s", serial, "shell", `pkill -f ${jarRemote}`]).catch(() => {});
+    run(ADB, ["-s", serial, "forward", "--remove", `tcp:${port}`]).catch(() => {});
+  };
+  return { socket, close };
+}
+
 // Starts the control-only scrcpy server, forwards its socket, and resolves
 // with a connected net.Socket.
 export async function startControlSocket(serial) {
@@ -212,6 +265,7 @@ export async function startControlSocket(serial) {
     try { socket.destroy(); } catch {}
     server.kill("SIGTERM");
     setTimeout(() => { if (server.exitCode == null) server.kill("SIGKILL"); }, 2000).unref();
+    run(ADB, ["-s", serial, "shell", `pkill -f ${jarRemote}`]).catch(() => {});
     run(ADB, ["-s", serial, "forward", "--remove", `tcp:${port}`]).catch(() => {});
   };
   return { socket, close };

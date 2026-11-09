@@ -170,19 +170,20 @@ export class MjpegParser {
 // Runs scrcpy | ffmpeg for a serial, and serves its frames the way the
 // emulator's stream helper does: multipart on a localhost port, with the
 // latest frame sent to a new viewer right away.
+//
+// Two producers feed ffmpeg: the raw video socket (default) and the
+// Matroska-over-fifo pipeline (fallback, REX_SIM_PIPE=mkv).
 async function startStream(serial) {
   if (!toolsAvailable()) throw new Error("needs scrcpy and ffmpeg (brew install scrcpy ffmpeg)");
   const q = qualityConfig();
-  const fifo = `${tmpdir()}/rex-sim-${process.pid}-${serial.replace(/[^A-Za-z0-9]/g, "_")}.mkv`;
-  rmSync(fifo, { force: true });
-  if (spawnSync("sh", ["-c", `mkfifo "${fifo}"`]).status !== 0) {
-    throw new Error("couldn't create a pipe for the phone's stream");
-  }
 
   const viewers = new Set();
   let last = null;
   let idle = null;
   let stopped = false;
+  let firstFrameTimer = null;
+  const children = [];
+  const cleanups = [];
 
   function send(res, jpeg) {
     res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpeg.length}\r\n\r\n`);
@@ -206,14 +207,16 @@ async function startStream(serial) {
     if (stopped) return;
     stopped = true;
     clearTimeout(idle);
-    for (const child of [scrcpy, ffmpeg]) {
+    for (const child of children) {
       if (child.exitCode != null) continue;
       child.kill("SIGTERM");
       setTimeout(() => {
         if (child.exitCode == null) child.kill("SIGKILL");
       }, 2000).unref();
     }
-    rmSync(fifo, { force: true });
+    for (const cleanup of cleanups) {
+      try { cleanup(); } catch {}
+    }
   };
   const stop = () => {
     clearTimeout(firstFrameTimer);
@@ -223,39 +226,86 @@ async function startStream(serial) {
     viewers.clear();
   };
 
-  const scrcpy = spawn(SCRCPY, [
-    "--no-playback", "--no-window", "--no-audio", "--no-control",
-    `--video-codec=${q.codec}`, `--max-size=${q.width}`,
-    `--video-bit-rate=${q.bitrate}`, `--max-fps=${q.fps}`,
-    `--record=${fifo}`, "--record-format=mkv", "-s", serial,
-  ]);
-  const ffmpeg = spawn(FFMPEG, [
-    "-loglevel", "error", "-nostdin",
-    // -fflags nobuffer starves the matroska-over-fifo demuxer; keep the
-    // other low-latency flags instead.
-    "-flags", "low_delay", "-analyzeduration", "0", "-probesize", "32768",
-    "-f", "matroska", "-i", fifo,
-    "-an", "-sn",
-    "-c:v", "mjpeg", "-q:v", String(q.jpegQ),
-    "-f", "image2pipe", "-",
-  ], { stdio: ["ignore", "pipe", "inherit"] });
-
   const parser = new MjpegParser();
   let sawFrame = false;
-  ffmpeg.stdout.on("data", (chunk) => {
-    parser.push(chunk);
-    for (const jpeg of parser.next()) {
-      sawFrame = true;
-      last = jpeg;
-      for (const res of viewers) send(res, last);
+  const watch = (ffmpeg) => {
+    children.push(ffmpeg);
+    ffmpeg.stdout.on("data", (chunk) => {
+      parser.push(chunk);
+      for (const jpeg of parser.next()) {
+        sawFrame = true;
+        last = jpeg;
+        for (const res of viewers) send(res, last);
+      }
+    });
+    ffmpeg.on("exit", stop);
+    ffmpeg.on("error", stop);
+    // A phone with an idle screen may not send any frame; don't hang the pane.
+    firstFrameTimer = setTimeout(() => { if (!sawFrame) stop(); }, 20000);
+  };
+
+  // Preferred: talk to our own video-only scrcpy server and feed its raw
+  // bitstream to ffmpeg on stdin. No container, no fifo.
+  async function startRaw() {
+    const { startVideoSocket } = await import("./scrcpy-control.mjs");
+    const { socket, close } = await startVideoSocket(serial, q);
+    const ffmpeg = spawn(FFMPEG, [
+      "-loglevel", "error", "-nostdin",
+      "-flags", "low_delay", "-analyzeduration", "0", "-probesize", "32768",
+      "-f", q.codec === "h265" ? "hevc" : "h264", "-i", "pipe:0",
+      "-an", "-sn",
+      "-c:v", "mjpeg", "-q:v", String(q.jpegQ),
+      "-f", "image2pipe", "-",
+    ], { stdio: ["pipe", "pipe", "inherit"] });
+    socket.pipe(ffmpeg.stdin);
+    socket.on("error", stop);
+    socket.on("close", () => { try { ffmpeg.stdin.end(); } catch {} });
+    cleanups.push(close);
+    return ffmpeg;
+  }
+
+  // Fallback: the original scrcpy client recording Matroska into a fifo.
+  async function startMkv() {
+    const fifo = `${tmpdir()}/rex-sim-${process.pid}-${serial.replace(/[^A-Za-z0-9]/g, "_")}.mkv`;
+    rmSync(fifo, { force: true });
+    if (spawnSync("sh", ["-c", `mkfifo "${fifo}"`]).status !== 0) {
+      throw new Error("couldn't create a pipe for the phone's stream");
     }
-  });
-  // A phone with an idle screen may not send any frame; don't hang the pane.
-  const firstFrameTimer = setTimeout(() => { if (!sawFrame) stop(); }, 20000);
-  ffmpeg.on("exit", stop);
-  scrcpy.on("exit", stop);
-  ffmpeg.on("error", stop);
-  scrcpy.on("error", stop);
+    const scrcpy = spawn(SCRCPY, [
+      "--no-playback", "--no-window", "--no-audio", "--no-control",
+      `--video-codec=${q.codec}`, `--max-size=${q.width}`,
+      `--video-bit-rate=${q.bitrate}`, `--max-fps=${q.fps}`,
+      `--record=${fifo}`, "--record-format=mkv", "-s", serial,
+    ]);
+    children.push(scrcpy);
+    scrcpy.on("exit", stop);
+    scrcpy.on("error", stop);
+    cleanups.push(() => rmSync(fifo, { force: true }));
+    const ffmpeg = spawn(FFMPEG, [
+      "-loglevel", "error", "-nostdin",
+      // -fflags nobuffer starves the matroska-over-fifo demuxer; keep the
+      // other low-latency flags instead.
+      "-flags", "low_delay", "-analyzeduration", "0", "-probesize", "32768",
+      "-f", "matroska", "-i", fifo,
+      "-an", "-sn",
+      "-c:v", "mjpeg", "-q:v", String(q.jpegQ),
+      "-f", "image2pipe", "-",
+    ], { stdio: ["ignore", "pipe", "inherit"] });
+    return ffmpeg;
+  }
+
+  let ffmpeg;
+  if (process.env.REX_SIM_PIPE === "mkv") {
+    ffmpeg = await startMkv();
+  } else {
+    try {
+      ffmpeg = await startRaw();
+    } catch (e) {
+      console.error(`raw video unavailable (${e.message}); falling back to mkv pipe`);
+      ffmpeg = await startMkv();
+    }
+  }
+  watch(ffmpeg);
 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   return { port: server.address().port, close: stop };

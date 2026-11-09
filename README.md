@@ -32,6 +32,7 @@ Physical-device stream quality is tunable with environment variables (set them b
 | `REX_SIM_FPS` | `60` | Maximum capture frame rate, 10–120. |
 | `REX_SIM_JPEG_Q` | `4` | MJPEG quality, 1 (best) – 31 (worst). |
 | `REX_SIM_INPUT` | — | `control` opts into the scrcpy control channel (faster, but blocked on some OEMs until “USB debugging (Security settings)” is enabled). |
+| `REX_SIM_PIPE` | — | `mkv` forces the older Matroska-over-fifo pipeline; the raw H.264/HEVC socket is the default. |
 | `REX_SIM_SCRCPY` / `REX_SIM_FFMPEG` / `REX_SIM_SCRCPY_SERVER` | — | Override tool paths. |
 
 With [Amber](https://github.com/rawnly/amber), add rex-sim to your plugins in `~/.config/rex/init.lua`:
