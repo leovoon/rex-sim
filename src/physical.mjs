@@ -1,0 +1,211 @@
+// A real Android device (wired or wireless over adb) live in a Rex pane.
+//
+// The emulator path streams frames from the emulator's gRPC controller, which
+// a physical device doesn't have. For a real device we run scrcpy headless
+// (`--no-playback --no-window`) recording into a named pipe as Matroska, and
+// ffmpeg decodes that into a JPEG-per-frame stream we serve exactly like the
+// emulator's stream: multipart/x-mixed-replace PNGs/JPEGs over localhost.
+// Input goes through `adb shell input`, the same way the emulator path does.
+import { execFile, spawn, spawnSync } from "node:child_process";
+import http from "node:http";
+import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { promisify } from "node:util";
+import { ADB, adb, AdbInput } from "./adb-input.mjs";
+import { multipartFrames } from "./frames.mjs";
+
+const run = promisify(execFile);
+const SCRCPY = process.env.REX_SIM_SCRCPY || "scrcpy";
+const FFMPEG = process.env.REX_SIM_FFMPEG || "ffmpeg";
+const STREAM_WIDTH = 540;
+const IDLE_MS = 3000;
+
+let toolsChecked = null;
+function toolsAvailable() {
+  if (toolsChecked === null) {
+    const r = spawnSync("sh", ["-c", `command -v "${SCRCPY}" >/dev/null && command -v "${FFMPEG}" >/dev/null`]);
+    toolsChecked = r.status === 0;
+  }
+  return toolsChecked;
+}
+
+// `adb devices` output -> physical Android devices. Emulator serials are left
+// to the android platform; anything else with a state counts.
+export function parseDevices(stdout) {
+  const devices = [];
+  for (const line of stdout.split("\n")) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length !== 2) continue; // the header line and empty lines
+    const [serial, state] = parts;
+    if (serial.startsWith("emulator-")) continue;
+    let unusable = null;
+    if (state === "unauthorized") unusable = "authorize this computer on the phone (USB debugging prompt)";
+    else if (state === "offline") unusable = "offline";
+    else if (state !== "device") unusable = `state: ${state}`;
+    devices.push({ platform: "android-physical", id: serial, serial, name: serial, os: "Android", booted: false, unusable });
+  }
+  return devices;
+}
+
+export async function listPhysicalDevices() {
+  const { stdout } = await run(ADB, ["devices"]);
+  const devices = parseDevices(stdout);
+  if (devices.length && !toolsAvailable()) {
+    for (const d of devices) d.unusable = "needs scrcpy and ffmpeg (brew install scrcpy ffmpeg)";
+    return devices;
+  }
+  await Promise.all(devices.map(async (d) => {
+    if (d.unusable) return;
+    try {
+      const { stdout: props } = await adb(d.serial, ["shell", "getprop ro.product.model; getprop ro.build.version.release; getprop sys.boot_completed"]);
+      const [model, release, booted] = props.trim().split("\n").map((s) => s.trim());
+      d.name = model || d.serial;
+      d.os = release ? `Android ${release}` : "Android";
+      d.booted = booted === "1";
+    } catch {}
+  }));
+  return devices;
+}
+
+// A device that isn't in `adb devices` yet: wireless serials (ip:port) get an
+// `adb connect`. Wired devices are already there.
+export async function connectPhysicalDevice(device) {
+  if (device.serial.includes(":")) await run(ADB, ["connect", device.serial]);
+}
+
+// `input keyevent 224` wakes the screen; a locked phone shows its lock screen.
+export async function startPhysicalDevice(device) {
+  const serial = device.serial;
+  await adb(serial, ["shell", "input", "keyevent", "224"]).catch(() => {});
+  const m = /(\d+)x(\d+)/.exec((await adb(serial, ["shell", "wm", "size"])).stdout);
+  const size = m ? { width: Number(m[1]), height: Number(m[2]) } : { width: 1080, height: 2220 };
+  const abort = new AbortController();
+  const { port, close } = await startStream(serial);
+  return {
+    device,
+    frames: multipartFrames(`http://127.0.0.1:${port}/stream`, abort.signal),
+    input: new AdbInput(serial, size),
+    close: () => {
+      abort.abort();
+      close();
+    },
+  };
+}
+
+// JPEG frames from a byte stream, as ffmpeg's image2pipe produces them. A
+// JPEG is FFD8 … FFD9; encoder byte-stuffing keeps real FFD9 bytes out of the
+// scan data, so scanning for the markers is reliable.
+export class MjpegParser {
+  constructor() {
+    this.buf = Buffer.alloc(0);
+    this.SOI = Buffer.from([0xff, 0xd8]);
+    this.EOI = Buffer.from([0xff, 0xd9]);
+  }
+
+  push(chunk) {
+    this.buf = Buffer.concat([this.buf, chunk]);
+  }
+
+  // Every complete frame currently buffered, leaving the rest for later.
+  next() {
+    const frames = [];
+    for (;;) {
+      const s = this.buf.indexOf(this.SOI);
+      if (s < 0) {
+        // Drop garbage, but keep a byte so a marker split across chunks isn't missed.
+        this.buf = this.buf.length ? this.buf.subarray(this.buf.length - 1) : this.buf;
+        return frames;
+      }
+      if (s > 0) this.buf = this.buf.subarray(s);
+      const e = this.buf.indexOf(this.EOI, 2);
+      if (e < 0) {
+        // A corrupt stream without an end marker: drop the head and keep scanning.
+        if (this.buf.length > 16 * 1024 * 1024) this.buf = this.buf.subarray(this.buf.length - 4096);
+        return frames;
+      }
+      frames.push(this.buf.subarray(0, e + 2));
+      this.buf = this.buf.subarray(e + 2);
+    }
+  }
+}
+
+// Runs scrcpy | ffmpeg for a serial, and serves its frames the way the
+// emulator's stream helper does: multipart on a localhost port, with the
+// latest frame sent to a new viewer right away.
+async function startStream(serial) {
+  if (!toolsAvailable()) throw new Error("needs scrcpy and ffmpeg (brew install scrcpy ffmpeg)");
+  const fifo = `${tmpdir()}/rex-sim-${process.pid}-${serial.replace(/[^A-Za-z0-9]/g, "_")}.mkv`;
+  rmSync(fifo, { force: true });
+  if (spawnSync("sh", ["-c", `mkfifo "${fifo}"`]).status !== 0) {
+    throw new Error("couldn't create a pipe for the phone's stream");
+  }
+
+  const viewers = new Set();
+  let last = null;
+  let idle = null;
+  let stopped = false;
+
+  function send(res, jpeg) {
+    res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpeg.length}\r\n\r\n`);
+    res.write(jpeg);
+    res.write("\r\n");
+  }
+
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { "content-type": "multipart/x-mixed-replace; boundary=frame", "cache-control": "no-store" });
+    viewers.add(res);
+    if (last) send(res, last);
+    clearTimeout(idle);
+    idle = null;
+    res.on("close", () => {
+      viewers.delete(res);
+      if (!viewers.size) idle ??= setTimeout(stop, IDLE_MS);
+    });
+  });
+
+  const killChildren = () => {
+    if (stopped) return;
+    stopped = true;
+    clearTimeout(idle);
+    for (const child of [scrcpy, ffmpeg]) {
+      if (child.exitCode != null) continue;
+      child.kill("SIGTERM");
+      setTimeout(() => {
+        if (child.exitCode == null) child.kill("SIGKILL");
+      }, 2000).unref();
+    }
+    rmSync(fifo, { force: true });
+  };
+  const stop = () => {
+    killChildren();
+    server.close();
+    for (const res of viewers) res.destroy();
+    viewers.clear();
+  };
+
+  const scrcpy = spawn(SCRCPY, [
+    "--no-playback", "--no-window", "--no-audio", "--no-control",
+    "--video-codec=h264", `--max-size=${STREAM_WIDTH}`,
+    `--record=${fifo}`, "--record-format=mkv", "-s", serial,
+  ]);
+  const ffmpeg = spawn(FFMPEG, [
+    "-loglevel", "error", "-nostdin", "-f", "matroska", "-i", fifo,
+    "-an", "-f", "image2pipe", "-vcodec", "mjpeg", "-",
+  ], { stdio: ["ignore", "pipe", "inherit"] });
+
+  const parser = new MjpegParser();
+  ffmpeg.stdout.on("data", (chunk) => {
+    parser.push(chunk);
+    for (const jpeg of parser.next()) {
+      last = jpeg;
+      for (const res of viewers) send(res, last);
+    }
+  });
+  ffmpeg.on("exit", stop);
+  scrcpy.on("exit", stop);
+  ffmpeg.on("error", stop);
+  scrcpy.on("error", stop);
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { port: server.address().port, close: stop };
+}

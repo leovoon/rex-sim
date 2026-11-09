@@ -11,10 +11,12 @@ const { values: opts } = parseArgs({ options: { device: { type: "string", short:
 if (opts.help) {
   console.log(`Usage: rex-sim [--device ID]
 
-Shows an iOS simulator or Android emulator in this terminal. Click to tap, drag
-to swipe, scroll, and type. Ctrl-P picks a device, Ctrl-C quits.
+Shows an iOS simulator, Android emulator, or real Android device in this
+terminal. Click to tap, drag to swipe, scroll, and type. Ctrl-P picks a
+device, Ctrl-C quits.
 
---device  a simulator's UDID or avd:<name> for an emulator. Without it, the
+--device  a simulator's UDID, avd:<name> for an emulator, or an adb serial
+          (like 192.0.2.10:5555) for a physical device. Without it, the
           device picked last, else the first running one.
 
 Needs a terminal with Kitty graphics and pixel mouse reporting, such as Rex.`);

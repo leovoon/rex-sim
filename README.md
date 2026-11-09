@@ -1,21 +1,27 @@
 # rex-sim
 
-Your iOS simulator and Android emulator, live in a [Rex](https://www.superlogical.com/rex) pane, next to your code and terminals.
+Your iOS simulator, Android emulator, and real Android device, live in a [Rex](https://www.superlogical.com/rex) pane, next to your code and terminals.
 
-Pick any simulator or emulator on your Mac and use it right in Rex. Run your mobile tests and watch them tap through the app while the results print beside it.
+Pick any simulator or emulator on your Mac — or a physical Android phone over adb — and use it right in Rex. Run your mobile tests and watch them tap through the app while the results print beside it.
 
 ## What you can do
 
 - **See the device live.** The screen updates up to about 40 times a second while it moves.
 - **Use it in place.** Click to tap, drag to swipe, scroll with your mouse or trackpad, and type with your keyboard. A drag that starts at the bottom edge of an iPhone goes home, as on the phone.
 - **Press its buttons.** Home, Lock, the volume keys, Rotate and the iOS on-screen keyboard are actions in the command palette, so you can bind them to keys.
-- **Switch devices.** Click the device name at the bottom left, or press Ctrl-P. The picker lists every iOS simulator and Android emulator on your Mac, with the running ones marked green. Pick one that's off and it starts. Android emulators run without a window of their own.
+- **Switch devices.** Click the device name at the bottom left, or press Ctrl-P. The picker lists every iOS simulator, Android emulator, and connected physical Android device on your Mac, with the running ones marked green. Pick one that's off and it starts. Android emulators run without a window of their own.
 - **Show two at once.** Each pane has its own device, so an iPhone and an Android emulator can run side by side. A new pane starts on the device you picked last.
 - **Fix stuck taps.** On Xcode 27, taps on a simulator sometimes stop working. Repair input, at the bottom of the picker, fixes them. It restarts SpringBoard, so open apps close.
 
 ## Install
 
-You need macOS, Xcode with at least one simulator, and Node 22 or later. For Android you also need the Android SDK and an emulator image built for your Mac's chip.
+You need macOS, Xcode with at least one simulator, and Node 22 or later. For Android you also need the Android SDK and an emulator image built for your Mac's chip. For a **physical Android device** (wired, or wireless over `adb connect`), also install `scrcpy` and `ffmpeg`:
+
+```sh
+brew install scrcpy ffmpeg
+```
+
+The phone must have USB debugging authorized (adb shows it as `device`, not `unauthorized`).
 
 With [Amber](https://github.com/rawnly/amber), add rex-sim to your plugins in `~/.config/rex/init.lua`:
 
@@ -84,12 +90,14 @@ You can also run the pane in any Rex terminal with `node bin/rex-sim.mjs`, and `
 rex-sim sends nothing over the internet itself.
 
 - For iOS it runs Xcode's simulator tools and [serve-sim](https://github.com/EvanBacon/serve-sim) 0.1.49 through `npx`, which downloads from npm the first time. serve-sim keeps running after the pane closes.
-- For Android it runs `adb` and the emulator from your Android SDK, plus a small helper that comes with rex-sim. The helper stops a few seconds after the last pane showing that emulator closes.
+- For Android emulators it runs `adb` and the emulator from your Android SDK, plus a small helper that comes with rex-sim. The helper stops a few seconds after the last pane showing that emulator closes.
+- For a real Android device it runs `scrcpy` headless (`--no-playback --no-window`), recording into a pipe as Matroska, and `ffmpeg` turns that into the frame stream. Input goes through `adb shell input`, like the emulator path. The phone's screen wakes when the stream opens; if it's locked, you'll see the lock screen.
 - It shrinks each frame to the pane with [sharp](https://sharp.pixelplumbing.com) and hands it to Rex as a file in `/tmp`, which Rex reads and deletes.
 
 ## Limits
 
-- It works on macOS only. It's tested with Rex 1853, Xcode 27 and Android emulator 37.2.
+- It works on macOS only. It's tested with Rex 1853, Xcode 27, Android emulator 37.2 and scrcpy 3.3.4.
+- A wireless adb device streams over your network: that works, but expect noticeably slower, less smooth frames than USB. Plug in for demos.
 - Rex shows pictures only through the Kitty graphics protocol, so the pane must be a Rex terminal, or another terminal that draws Kitty graphics and reports the mouse in pixels.
 - Of the shortcuts, only Ctrl with a letter reaches the device, and on Android it types just the letter.
 - On a Rex without minimized floating panes, Simulator: Toggle closes a floating pane instead of hiding it.
