@@ -139,6 +139,19 @@ export class AdbStreamInput {
     return this.queue;
   }
 
+  // Drop the long-lived shell; called when the stream session closes, so a
+  // fresh adb shell doesn't pile up on every stream restart.
+  close() {
+    const proc = this.proc;
+    this.proc = null;
+    if (proc && proc.exitCode == null) {
+      proc.kill("SIGTERM");
+      setTimeout(() => {
+        if (proc.exitCode == null) proc.kill("SIGKILL");
+      }, 1000).unref();
+    }
+  }
+
   shell(args) {
     return this.run(args.join(" "));
   }
