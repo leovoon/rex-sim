@@ -455,6 +455,12 @@ export async function run({ device: deviceArg }) {
           continue;
         }
         activeSession = session;
+        // A new session may have a new orientation/aspect; forget the
+        // previous session's frame size so the first frame re-lays-out
+        // from scratch (otherwise stale portrait geometry persists until
+        // a manual stream restart).
+        frameSize = null;
+        latest = null;
         if (settingsMenu) show({ kind: "settings", text: settingsText() });
         else show({ kind: "streaming", session });
         await stream(session);
