@@ -246,6 +246,7 @@ async function startStream(serial) {
   const parser = new MjpegParser();
   let sawFrame = false;
   let fellBack = false;
+  let onDead = null;
 
   // The raw video socket connected but delivered no frames (some devices
   // never start streaming on a raw server). Switch producers to the mkv
@@ -264,6 +265,7 @@ async function startStream(serial) {
 
   const watch = (ffmpeg, mode) => {
     children.push(ffmpeg);
+    onDead = null;
     ffmpeg.stdout.on("data", (chunk) => {
       parser.push(chunk);
       for (const jpeg of parser.next()) {
@@ -272,15 +274,21 @@ async function startStream(serial) {
         for (const res of viewers) send(res, last);
       }
     });
-    ffmpeg.on("exit", stop);
-    ffmpeg.on("error", stop);
-    // A phone with an idle screen may not send any frame; don't hang the
-    // pane. For the raw producer, give the mkv pipeline a chance first.
-    firstFrameTimer = setTimeout(() => {
-      if (sawFrame || fellBack) return;
+    const dead = () => {
+      if (sawFrame || fellBack) return stop();
+      // The raw producer connected but produced nothing (some devices don't
+      // stream over our raw server, or it died after the audio/mkv session
+      // used the capture). Flip to the mkv pipeline immediately instead of
+      // hanging the pane.
       if (mode === "raw") fallbackToMkv();
       else stop();
-    }, 20000);
+    };
+    onDead = dead;
+    ffmpeg.on("exit", dead);
+    ffmpeg.on("error", dead);
+    // Backstop if the socket sits idle without either exit or frames; first
+    // frames normally arrive within a second, so keep this short.
+    firstFrameTimer = setTimeout(dead, 6000);
   };
 
   // Preferred: talk to our own video-only scrcpy server and feed its raw
@@ -297,7 +305,7 @@ async function startStream(serial) {
       "-f", "image2pipe", "-",
     ], { stdio: ["pipe", "pipe", "inherit"] });
     socket.pipe(ffmpeg.stdin);
-    socket.on("error", stop);
+    socket.on("error", () => onDead?.());
     socket.on("close", () => { try { ffmpeg.stdin.end(); } catch {} });
     cleanups.push(close);
     return ffmpeg;
