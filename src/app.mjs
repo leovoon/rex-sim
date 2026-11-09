@@ -170,7 +170,7 @@ export async function run({ device: deviceArg }) {
     if (view.kind !== "streaming" || qualityMenu) return;
     qualityMenu = true;
     streamSession = view.session;
-    show({ kind: "message", text: settingsText() });
+    show({ kind: "settings", text: settingsText() });
   }
 
   function closeQuality() {
