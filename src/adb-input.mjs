@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 
@@ -98,6 +98,108 @@ export class AdbInput {
 
   rotate() {
     // adb joins shell arguments into one command line, so this goes as one string.
+    return this.shell(["settings put system accelerometer_rotation 0; r=$(settings get system user_rotation); settings put system user_rotation $(( (${r:-0} + 1) % 4 ))"]);
+  }
+}
+
+// The same surface, but over one long-lived `adb shell` session: commands are
+// written to its stdin instead of spawning a fresh adb process per event. This
+// cuts per-event latency by roughly half (and more over wireless).
+export class AdbStreamInput {
+  constructor(serial, size) {
+    this.serial = serial;
+    this.size = size;
+    this.proc = null;
+    this.queue = Promise.resolve();
+    this.move = null;
+    this.wheel = null;
+    this.held = new Set();
+    this.start();
+  }
+
+  start() {
+    this.proc = spawn(ADB, ["-s", this.serial, "shell"], { stdio: ["pipe", "ignore", "pipe"] });
+    const proc = this.proc;
+    proc.on("error", () => {});
+    proc.stderr.on("data", () => {});
+    proc.on("exit", () => {
+      if (this.proc === proc) this.proc = null;
+    });
+  }
+
+  // Commands run one at a time, in order; a dead shell is respawned. A
+  // function command is called at execution time (for coalesced moves/wheels).
+  run(command) {
+    this.queue = this.queue.then(() => new Promise((resolve) => {
+      const line = typeof command === "function" ? command() : command;
+      if (!line) return resolve();
+      if (!this.proc) this.start();
+      this.proc.stdin.write(line + "\n", () => resolve());
+    })).catch(() => {});
+    return this.queue;
+  }
+
+  shell(args) {
+    return this.run(args.join(" "));
+  }
+
+  px(p) {
+    return [String(Math.round(p.x * (this.size.width - 1))), String(Math.round(p.y * (this.size.height - 1)))];
+  }
+
+  touch(type, p) {
+    if (type === "move") {
+      const queued = this.move != null;
+      this.move = p;
+      if (queued) return;
+      return this.run(() => {
+        const at = this.move;
+        this.move = null;
+        return at && `input motionevent MOVE ${this.px(at).join(" ")}`;
+      });
+    }
+    this.move = null;
+    return this.shell(["input", "motionevent", type === "begin" ? "DOWN" : "UP", ...this.px(p)]);
+  }
+
+  key(type, usage) {
+    if (MODIFIERS.has(usage)) {
+      if (type === "down") this.held.add(usage);
+      else this.held.delete(usage);
+      return;
+    }
+    const code = KEYCODES[usage];
+    if (type !== "down" || code == null) return;
+    return this.held.has(SHIFT)
+      ? this.shell(["input", "keycombination", "59", String(code)])
+      : this.shell(["input", "keyevent", String(code)]);
+  }
+
+  button(name) {
+    const code = BUTTONS[name];
+    if (code == null) return;
+    return this.shell(["input", "keyevent", String(code)]);
+  }
+
+  volume(direction) {
+    const code = VOLUME[direction];
+    if (code == null) return;
+    return this.shell(["input", "keyevent", String(code)]);
+  }
+
+  scroll(dy, p) {
+    const queued = this.wheel != null;
+    this.wheel = { dy: (this.wheel?.dy ?? 0) + dy, p };
+    if (queued) return;
+    return this.run(() => {
+      const { dy, p } = this.wheel;
+      this.wheel = null;
+      const to = { x: p.x, y: clamp01(p.y - dy) };
+      return `input swipe ${this.px(p).join(" ")} ${this.px(to).join(" ")} 120`;
+    });
+  }
+
+  rotate() {
     return this.shell(["settings put system accelerometer_rotation 0; r=$(settings get system user_rotation); settings put system user_rotation $(( (${r:-0} + 1) % 4 ))"]);
   }
 }

@@ -11,7 +11,7 @@ import http from "node:http";
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
-import { ADB, adb, AdbInput } from "./adb-input.mjs";
+import { ADB, adb, AdbInput, AdbStreamInput } from "./adb-input.mjs";
 import { multipartFrames } from "./frames.mjs";
 import { ScrcpyInput, startControlSocket } from "./scrcpy-control.mjs";
 
@@ -99,11 +99,12 @@ export async function startPhysicalDevice(device) {
   const size = m ? { width: Number(m[1]), height: Number(m[2]) } : { width: 1080, height: 2220 };
   const abort = new AbortController();
   const { port, close } = await startStream(serial);
-  // adb shell input is the reliable default; the scrcpy control channel is
-  // opt-in via REX_SIM_INPUT=control. Some OEMs (vivo/OriginOS) block the
-  // injected input until 'USB debugging (Security settings)' is enabled in
-  // developer options.
-  let input = new AdbInput(serial, size);
+  // A persistent adb shell is the reliable default (fast, no per-event
+  // process). REX_SIM_ADB_SPAWN=1 restores one adb spawn per event;
+  // REX_SIM_INPUT=control opts into the scrcpy control channel (fastest, but
+  // some OEMs like vivo/OriginOS block it until 'USB debugging (Security
+  // settings)' is enabled in developer options).
+  let input;
   if (process.env.REX_SIM_INPUT === "control") {
     try {
       const { socket, close: closeControl } = await startControlSocket(serial);
@@ -113,6 +114,7 @@ export async function startPhysicalDevice(device) {
       console.error(`scrcpy control unavailable (${e.message}); using adb input`);
     }
   }
+  input ??= process.env.REX_SIM_ADB_SPAWN === "1" ? new AdbInput(serial, size) : new AdbStreamInput(serial, size);
   return {
     device,
     frames: multipartFrames(`http://127.0.0.1:${port}/stream`, abort.signal),
