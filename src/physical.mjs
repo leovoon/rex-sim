@@ -163,13 +163,18 @@ function toolsAvailable() {
 }
 
 // `adb devices` output -> physical Android devices. Emulator serials are left
-// to the android platform; anything else with a state counts.
+// to the android platform; anything else with a state counts. The state is
+// always the last whitespace-delimited token; serials themselves may contain
+// spaces (adb's mDNS disambiguation appends " (2)" for duplicate service
+// instances), so only the trailing token is read as the state.
 export function parseDevices(stdout) {
   const devices = [];
   for (const line of stdout.split("\n")) {
     const parts = line.trim().split(/\s+/);
-    if (parts.length !== 2) continue; // the header line and empty lines
-    const [serial, state] = parts;
+    if (parts.length < 2) continue; // empty lines
+    const state = parts[parts.length - 1];
+    const serial = parts.slice(0, -1).join(" ");
+    if (serial === "List of devices") continue; // header line
     if (serial.startsWith("emulator-")) continue;
     let unusable = null;
     if (state === "unauthorized") unusable = "authorize this computer on the phone (USB debugging prompt)";

@@ -20,6 +20,17 @@ test("physical devices: emulators skipped, states surfaced", () => {
   ]);
 });
 
+test("mDNS serials with disambiguation spaces parse", () => {
+  const out = [
+    "List of devices attached",
+    "adb-ABCDE12345FAKE (2)._adb-tls-connect._tcp\tdevice",
+    "",
+  ].join("\n");
+  assert.deepEqual(parseDevices(out), [
+    { platform: "android-physical", id: "adb-ABCDE12345FAKE (2)._adb-tls-connect._tcp", serial: "adb-ABCDE12345FAKE (2)._adb-tls-connect._tcp", name: "adb-ABCDE12345FAKE (2)._adb-tls-connect._tcp", os: "Android", booted: false, unusable: null },
+  ]);
+});
+
 test("no devices lists none", () => {
   assert.deepEqual(parseDevices("List of devices attached\n"), []);
 });
